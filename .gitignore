@@ -1,0 +1,9 @@
+# Qt Creator user file (machine-specific, do not commit)
+*.pro.user
+# Python caches
+__pycache__/
+*.pyc
+# Build output
+build/
+# Agent working memory (private)
+.workbuddy/
