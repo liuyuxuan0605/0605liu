@@ -34,13 +34,25 @@ inline std::unique_ptr<IDataStructure> createDataStructure(DSKind kind) {
         case DSKind::RedBlackTree:       return std::make_unique<RedBlackTree>();
         case DSKind::Deque:              return std::make_unique<Deque>();
         case DSKind::BlockingQueue:      return std::make_unique<BlockingQueue>();
-        case DSKind::BTree:              return std::make_unique<BTree>();
-        case DSKind::BPlusTree:          return std::make_unique<BPlusTree>();
+        case DSKind::BTree:              return std::make_unique<BTree>();          // default t=2 (max degree 4)
+        case DSKind::BPlusTree:          return std::make_unique<BPlusTree>();      // default maxK=3
         case DSKind::RingBuffer:          return std::make_unique<RingBuffer>();
         case DSKind::Graph:               return std::make_unique<Graph>();
         case DSKind::LRUCache:            return std::make_unique<LRUCache>();
     }
     return nullptr;
+}
+
+// Overload with configurable degree for B-tree / B+tree.
+// For BTree:   degree = min degree t (max keys = 2t-1, max children = 2t)
+// For BPlusTree: degree = max keys per node (max degree = degree+1)
+// Other structures ignore this parameter.
+inline std::unique_ptr<IDataStructure> createDataStructure(DSKind kind, int degree) {
+    switch (kind) {
+        case DSKind::BTree:     return std::make_unique<BTree>(degree);       // t = degree
+        case DSKind::BPlusTree: return std::make_unique<BPlusTree>(degree);    // maxK = degree
+        default:                return createDataStructure(kind);               // fallback
+    }
 }
 
 inline const char* kindToString(DSKind k) {

@@ -34,6 +34,7 @@ SOURCES += \
     src/app/main.cpp \
     src/visual/LayoutEngine.cpp \
     src/visual/DSScene.cpp \
+    src/visual/DSSceneView.cpp \
     src/ui/OperationPanel.cpp \
     src/ui/LogViewer.cpp \
     src/ui/MainWindow.cpp
@@ -62,6 +63,7 @@ HEADERS += \
     src/visual/VisualEdge.h \
     src/visual/LayoutEngine.h \
     src/visual/DSScene.h \
+    src/visual/DSSceneView.h \
     src/visual/StepAnimator.h \
     src/ui/OperationPanel.h \
     src/ui/LogViewer.h \

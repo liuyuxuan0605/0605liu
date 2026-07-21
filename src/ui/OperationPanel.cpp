@@ -128,6 +128,19 @@ OperationPanel::OperationPanel(QWidget* parent) : QWidget(parent) {
     v3->addWidget(speedLabel);
     root->addWidget(gbSpeed);
 
+    // --- Max Degree (only for BTree / BPlusTree) ---
+    m_degreeGroup = new QGroupBox("Max. Degree (阶)");
+    auto* dgrid = new QVBoxLayout(m_degreeGroup);
+    m_degreeSpin = new QSpinBox();
+    m_degreeSpin->setRange(2, 10);       // max 2~10 keys per node
+    m_degreeSpin->setValue(3);           // default: same as original hardcoded MAXK
+    m_degreeSpin->setToolTip("B树/B+树每节点最大键数。改后清空当前数据并重建。");
+    connect(m_degreeSpin, QOverload<int>::of(&QSpinBox::valueChanged), this,
+        [this](int v) { emit degreeChanged(v); });
+    dgrid->addWidget(m_degreeSpin);
+    m_degreeGroup->setVisible(false);   // only shown for BTree/BPlusTree
+    root->addWidget(m_degreeGroup);
+
     // --- presets ---
     m_presetBtn = new QPushButton("运行演示序列");
     connect(m_presetBtn, &QPushButton::clicked, this, &OperationPanel::presetRequested);
@@ -210,11 +223,13 @@ void OperationPanel::relabel(DSKind kind) {
     bool isGraph = (kind == DSKind::Graph);
     bool isLRU   = (kind == DSKind::LRUCache);
     bool isBST   = (kind == DSKind::BinarySearchTree);  // 本版仅 BST 实现 BFS/DFS
-    // 通用操作组对非图隐藏；双端组仅 Deque；图操作组仅 Graph；树遍历组仅 BST
+    bool isBTreeFamily = (kind == DSKind::BTree || kind == DSKind::BPlusTree);
+    // 通用操作组对非图隐藏；双端组仅 Deque；图操作组仅 Graph；树遍历组仅 BST；阶数仅 B/B+
     m_opGroup->setVisible(!isGraph);
     m_dequeGroup->setVisible(kind == DSKind::Deque);
     m_graphGroup->setVisible(isGraph);
     m_treeGroup->setVisible(isBST);
+    m_degreeGroup->setVisible(isBTreeFamily);
     m_findBtn->setVisible(true);
 
     // 默认通用标签（链表 / BST / AVL / RB / BTree / B+Tree 用 插入/删除）

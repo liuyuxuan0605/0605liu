@@ -6,6 +6,7 @@
 #include <QSlider>
 #include <QLabel>
 #include <QGroupBox>
+#include <QSpinBox>
 #include <QStandardItemModel>
 #include "../core/Common.h"
 
@@ -24,6 +25,7 @@ signals:
     void operationRequested(const QString& op, const QString& value);
     void presetRequested();
     void speedChanged(double);
+    void degreeChanged(int maxDegree);   // B-tree / B+tree max degree (keys per node)
 
 public slots:
     void setKindIndex(int kind);   // 以 DSKind 值为参数，保持下拉与结构同步
@@ -68,6 +70,8 @@ private:
     QGroupBox* m_treeGroup;     // 树遍历（BFS/DFS），仅 BST 等实现遍历的树可见
     QPushButton* m_treeBfsBtn;
     QPushButton* m_treeDfsBtn;
+    QGroupBox* m_degreeGroup;   // Max Degree (仅 BTree/BPlusTree 可见)
+    QSpinBox* m_degreeSpin;
 };
 
 } // namespace dsv

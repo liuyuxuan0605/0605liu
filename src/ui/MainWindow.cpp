@@ -23,11 +23,9 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
     setWindowTitle("数据结构可视化演示工具  DSVisualizer");
     resize(1180, 720);
 
-    // scene + view
+    // scene + view (DSSceneView adds middle-button pan + Ctrl+wheel zoom)
     m_scene = new DSScene(this);
-    m_view = new QGraphicsView(m_scene, this);
-    m_view->setRenderHint(QPainter::Antialiasing);
-    m_view->setViewportUpdateMode(QGraphicsView::FullViewportUpdate);
+    m_view = new DSSceneView(m_scene, this);
     m_view->setBackgroundBrush(QColor("#F7F8FA"));
     m_view->setMinimumSize(400, 400);
 
@@ -71,6 +69,7 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
     connect(m_ops, &OperationPanel::operationRequested, this, &MainWindow::runOperation);
     connect(m_ops, &OperationPanel::presetRequested, this, &MainWindow::runPreset);
     connect(m_ops, &OperationPanel::speedChanged, m_animator, &StepAnimator::setSpeed);
+    connect(m_ops, &OperationPanel::degreeChanged, this, &MainWindow::onDegreeChanged);
 
     connect(m_log, &LogViewer::play, m_animator, &StepAnimator::play);
     connect(m_log, &LogViewer::pause, m_animator, &StepAnimator::pause);
@@ -340,6 +339,36 @@ void MainWindow::rebuildAndShow(const QString& actionLabel) {
     m_animator->setFrames(std::move(fl));
     m_animator->toEnd();
     m_opCount = std::max(0, m_opCount - 1);
+    updateStatus();
+}
+
+void MainWindow::onDegreeChanged(int maxDegree) {
+    if (!m_ds) return;
+    if (m_kind != DSKind::BTree && m_kind != DSKind::BPlusTree) return;
+
+    // 保存当前值 → 用新 degree 重建数据结构 → 重插所有值
+    auto currentValues = m_values;   // copy
+    m_animator->stop();
+    m_animator->setFrames({});
+    m_scene->clearAll();
+    m_view->resetTransform();
+
+    // 用新 degree 创建新数据结构
+    m_ds = createDataStructure(m_kind, maxDegree);
+    m_scene->setKind(m_kind);
+
+    // 重插所有值（如果有的话）
+    for (const auto& v : currentValues) {
+        m_ds->insert(v);
+    }
+    m_values = currentValues;
+
+    // 展示当前状态
+    FrameList fl = { m_ds->currentFrame() };
+    m_log->setLog({ QString("Max Degree 改为 %1，已重建数据结构").arg(maxDegree),
+                    QString::fromStdString(m_ds->currentFrame().description) });
+    m_animator->setFrames(std::move(fl));
+    m_animator->toEnd();
     updateStatus();
 }
 

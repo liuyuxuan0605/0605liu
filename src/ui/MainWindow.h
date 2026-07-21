@@ -1,6 +1,6 @@
 #pragma once
 #include <QMainWindow>
-#include <QGraphicsView>
+#include "../visual/DSSceneView.h"
 #include <QLabel>
 #include <QPluginLoader>
 #include <QDockWidget>
@@ -30,6 +30,7 @@ private slots:
     void toggleTheme();
     void undo();
     void redo();
+    void onDegreeChanged(int maxDegree);  // B/B+ tree Max Degree changed → rebuild
 
 private:
     QVector<QPair<QString, QString>> buildPreset(DSKind kind) const;
@@ -42,7 +43,7 @@ private:
     std::unique_ptr<IDataStructure> m_ds;
     DSKind m_kind = DSKind::SinglyLinkedList;
     DSScene* m_scene = nullptr;
-    QGraphicsView* m_view = nullptr;
+    DSSceneView* m_view = nullptr;
     StepAnimator* m_animator = nullptr;
     OperationPanel* m_ops = nullptr;
     LogViewer* m_log = nullptr;

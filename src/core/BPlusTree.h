@@ -26,7 +26,7 @@ public:
         Node(bool l = false) : leaf(l), id(nextId()) {}
     };
 
-    BPlusTree() { root_ = std::make_unique<Node>(true); }
+    BPlusTree(int maxK = 3) : maxK_(maxK), minK_(maxK > 0 ? maxK / 2 : 1) { root_ = std::make_unique<Node>(true); }
 
     DSKind kind() const override { return DSKind::BPlusTree; }
     std::string name() const override { return "B+树 B+Tree"; }
@@ -133,8 +133,8 @@ public:
     }
 
 private:
-    static constexpr int MAXK = 3;
-    static constexpr int MINK = 1;
+    int maxK_ = 3;   // max keys per node (max degree = maxK + 1)
+    int minK_ = 1;   // min keys per node (for underflow detection)
     std::unique_ptr<Node> root_;
 
     // child index for descent: count of keys <= k  (B+tree separator convention)
@@ -168,7 +168,7 @@ private:
             node->keys.insert(node->keys.begin() + pos, k);
             frames.push_back(snapshot(StepType::InsertValue, "在叶子插入 " + k,
                 {node->id}, "#4CAF50"));
-            if ((int)node->keys.size() > MAXK) {
+            if ((int)node->keys.size() > maxK_) {
                 auto sp = splitLeaf(node, sep);
                 frames.push_back(snapshot(StepType::Split, "叶子分裂",
                     {node->id}, "#FF5722"));
@@ -185,7 +185,7 @@ private:
             node->children.insert(node->children.begin() + i + 1, std::move(newChild));
             frames.push_back(snapshot(StepType::Split, "节点分裂，上移分隔符 " + childSep,
                 {node->id}, "#FF5722"));
-            if ((int)node->keys.size() > MAXK) {
+            if ((int)node->keys.size() > maxK_) {
                 auto sp = splitInternal(node, sep);
                 frames.push_back(snapshot(StepType::Split, "内部节点溢出，再次分裂",
                     {node->id}, "#FF5722"));
@@ -231,13 +231,13 @@ private:
         }
         int i = childIndex(node, k);
         deleteRec(node->children[i].get(), k, frames);
-        if ((int)node->children[i]->keys.size() < MINK)
+        if ((int)node->children[i]->keys.size() < minK_)
             fixChild(node, i, frames);
     }
 
     void fixChild(Node* parent, int i, FrameList& frames) {
         Node* child = parent->children[i].get();
-        if (i > 0 && (int)parent->children[i - 1]->keys.size() > MINK) {
+        if (i > 0 && (int)parent->children[i - 1]->keys.size() > minK_) {
             Node* left = parent->children[i - 1].get();
             if (child->leaf) {
                 child->keys.insert(child->keys.begin(), left->keys.back());
@@ -252,7 +252,7 @@ private:
             frames.push_back(snapshot(StepType::Rebalance, "向左兄弟借键",
                 {parent->id}, "#FF5722"));
         } else if (i < (int)parent->children.size() - 1 &&
-                   (int)parent->children[i + 1]->keys.size() > MINK) {
+                   (int)parent->children[i + 1]->keys.size() > minK_) {
             Node* right = parent->children[i + 1].get();
             if (child->leaf) {
                 child->keys.push_back(right->keys.front());
