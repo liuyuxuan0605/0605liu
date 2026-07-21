@@ -67,6 +67,10 @@ except Exception as e:  # noqa: BLE001
         _retriever.add(_chunks)
         _retriever.save(INDEX_PATH)
 print(f"retriever={RETRIEVER} llm={LLM_PROVIDER} embedding={EMBEDDING_MODEL}", flush=True)
+if LLM_PROVIDER != "offline" and not OPENAI_API_KEY:
+    print("[WARN] LLM_PROVIDER 设为 openai 但 OPENAI_API_KEY 为空，将降级为离线拼接！请检查 .env 的 OPENAI_API_KEY", flush=True)
+if RETRIEVER == "semantic" and not OPENAI_API_KEY:
+    print("[WARN] RETRIEVER=semantic 但 OPENAI_API_KEY 为空，语义检索将降级为 naive 关键词！", flush=True)
 
 
 def answer(question, context):

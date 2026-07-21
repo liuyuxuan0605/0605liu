@@ -1,11 +1,37 @@
 import os
 
-# python-dotenv 是可选依赖：naive/offline 零依赖模式下没有它也能跑
-try:
-    from dotenv import load_dotenv
-    load_dotenv()
-except Exception:
-    pass
+
+def _load_env_file():
+    """加载同目录 .env。
+
+    python-dotenv 为可选依赖：若未安装（本机常见），退化为手动解析，
+    避免 '.env 存在却因 import 失败被静默忽略' 的坑
+    （曾导致配了 key/semantic 却仍 naive+offline）。
+    """
+    try:
+        from dotenv import load_dotenv
+        load_dotenv()
+        return
+    except Exception:
+        pass
+    env_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env")
+    if not os.path.exists(env_path):
+        return
+    with open(env_path, "r", encoding="utf-8") as f:
+        for raw in f:
+            line = raw.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            k, v = line.split("=", 1)
+            k, v = k.strip(), v.strip()
+            # 去掉成对的引号（' 或 "）
+            if len(v) >= 2 and v[0] == v[-1] and v[0] in ("'", '"'):
+                v = v[1:-1]
+            if k and k not in os.environ:  # 真实环境变量优先，不覆盖
+                os.environ[k] = v
+
+
+_load_env_file()
 
 
 def _env(name, default=""):
