@@ -42,8 +42,8 @@ def call_llm(question, hits, context, provider="offline", api_key="", base_url="
         ans, hl, src = _call_openai(question, hits, context, api_key, base_url, model)
         if not ans.startswith("[LLM 调用失败"):
             return ans, hl, src
-        # API 调用失败（key 无效 / 网络不可达）→ 降级为离线拼接，至少把检索资料给用户
-        print("[WARN] openai 调用失败，降级为离线拼接答案", flush=True)
+        # API 调用失败（key 无效 / 网络不可达 / 参数不支持）→ 降级为离线拼接，至少把检索资料给用户
+        print(f"[WARN] openai 调用失败，降级为离线拼接答案。原因：{ans}", flush=True)
 
     # 离线兜底：直接把检索到的资料拼接成答案
     # 相关性闸门：只有"查询里语料稀有的词被真正命中"（h.q_match）才视为相关，
@@ -64,34 +64,67 @@ def call_llm(question, hits, context, provider="offline", api_key="", base_url="
     return answer, highlight, sources
 
 
-def _call_openai(question, hits, context, api_key, base_url, model):
-    prompt = build_prompt(question, hits, context)
-    payload = {
-        "model": model,
-        "messages": [
-            {"role": "system", "content": SYSTEM_PROMPT},
-            {"role": "user", "content": prompt},
-        ],
-        "temperature": 0.3,
-        "response_format": {"type": "json_object"},
-    }
+def _parse_content(content):
+    """把模型返回的 content 解析成 dict（容忍外层 ```json 围栏）。"""
+    content = content.strip()
+    if content.startswith("```"):
+        content = content.split("```", 2)[1]
+        if content.lower().startswith("json"):
+            content = content[4:]
+    return json.loads(content)
+
+
+def _do_chat_request(payload, api_key, base_url):
     req = urllib.request.Request(
         base_url.rstrip("/") + "/chat/completions",
         data=json.dumps(payload).encode("utf-8"),
         headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
         method="POST",
     )
-    try:
-        with urllib.request.urlopen(req, timeout=30) as resp:
-            data = json.loads(resp.read().decode("utf-8"))
-        content = data["choices"][0]["message"]["content"]
-        # 部分厂商会在 JSON 外包 ```json 围栏，解析前剥离
-        content = content.strip()
-        if content.startswith("```"):
-            content = content.split("```", 2)[1]
-            if content.lower().startswith("json"):
-                content = content[4:]
-        obj = json.loads(content)
-        return obj.get("answer", ""), obj.get("highlight_nodes", []), obj.get("sources", [])
-    except Exception as e:  # noqa: BLE001
-        return f"[LLM 调用失败：{e}]", _extract_ints(question), []
+    with urllib.request.urlopen(req, timeout=30) as resp:
+        data = json.loads(resp.read().decode("utf-8"))
+    content = data["choices"][0]["message"]["content"]
+    obj = _parse_content(content)
+    return obj.get("answer", ""), obj.get("highlight_nodes", []), obj.get("sources", [])
+
+
+def _call_openai(question, hits, context, api_key, base_url, model):
+    prompt = build_prompt(question, hits, context)
+    base_payload = {
+        "model": model,
+        "messages": [
+            {"role": "system", "content": SYSTEM_PROMPT},
+            {"role": "user", "content": prompt},
+        ],
+        "temperature": 0.3,
+    }
+    # 优先带 JSON 模式；若 DashScope 因 response_format 参数拒绝（部分模型/chat 端点不支持），
+    # 自动去掉该参数重试（prompt 已强约束只输出 JSON，且 _parse_content 会剥离 ```json 围栏）。
+    attempts = [
+        {**base_payload, "response_format": {"type": "json_object"}},
+        base_payload,
+    ]
+    last_err = None
+    for idx, payload in enumerate(attempts):
+        try:
+            return _do_chat_request(payload, api_key, base_url)
+        except urllib.error.HTTPError as e:  # noqa: BLE001
+            body = ""
+            try:
+                body = e.read().decode("utf-8", "replace")
+            except Exception:  # noqa: BLE001
+                pass
+            print(f"    [openai HTTPError] attempt={idx+1} status={e.code} body={body}", flush=True)
+            last_err = f"HTTP {e.code} {body}"
+            # 若是最后一次尝试（已是不带 response_format 的兜底）仍失败，则放弃
+            if idx == len(attempts) - 1:
+                return f"[LLM 调用失败：{last_err}]", _extract_ints(question), []
+            # 否则继续下一次（去掉 response_format 重试）
+            continue
+        except Exception as e:  # noqa: BLE001
+            print(f"    [openai error] attempt={idx+1} {type(e).__name__}: {e}", flush=True)
+            last_err = str(e)
+            if idx == len(attempts) - 1:
+                return f"[LLM 调用失败：{last_err}]", _extract_ints(question), []
+            continue
+    return f"[LLM 调用失败：{last_err}]", _extract_ints(question), []
