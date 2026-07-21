@@ -1,5 +1,6 @@
 #pragma once
 #include <QGraphicsScene>
+#include <QStringList>
 #include <unordered_map>
 #include <map>
 #include "../core/Common.h"
@@ -24,6 +25,11 @@ public:
     // Wipe everything (used when switching data structure).
     void clearAll();
 
+    // External highlight (AI tutor plugin): highlight nodes whose displayed
+    // value matches one of `values`. Original colors are restored by clearHighlights().
+    void highlightByValue(const QStringList& values, const QColor& color);
+    void clearHighlights();
+
 signals:
     void nodeClicked(int id);
 
@@ -37,6 +43,7 @@ private:
     std::unordered_map<int, VisualNode*> m_nodes;
     std::map<std::pair<int,int>, VisualEdge*> m_edges;
     int m_lastNodeCount = -1;
+    std::unordered_map<int, QColor> m_savedFills;
 };
 
 } // namespace dsv

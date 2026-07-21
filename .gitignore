@@ -7,3 +7,7 @@ __pycache__/
 build/
 # Agent working memory (private)
 .workbuddy/
+
+rag-service/naive_index.pkl
+rag-service/.env
+*.pkl

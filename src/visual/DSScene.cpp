@@ -212,4 +212,23 @@ void DSScene::applyFrame(const Frame& frame, bool animated) {
     }
 }
 
+void DSScene::highlightByValue(const QStringList& values, const QColor& color) {
+    clearHighlights();
+    for (auto& kv : m_nodes) {
+        VisualNode* node = kv.second;
+        if (values.contains(node->value)) {
+            m_savedFills[kv.first] = node->fillColor();
+            node->setFillColor(color);
+        }
+    }
+}
+
+void DSScene::clearHighlights() {
+    for (auto& kv : m_savedFills) {
+        auto it = m_nodes.find(kv.first);
+        if (it != m_nodes.end()) it->second->setFillColor(kv.second);
+    }
+    m_savedFills.clear();
+}
+
 } // namespace dsv
