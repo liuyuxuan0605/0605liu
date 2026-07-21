@@ -55,20 +55,31 @@ class _Handler(BaseHTTPRequestHandler):
         self.end_headers()
 
     def do_POST(self):
-        if self.path.rstrip("/") != "/ask":
-            self.send_response(404)
+        try:
+            if self.path.rstrip("/") != "/ask":
+                self.send_response(404)
+                self.end_headers()
+                return
+            n = int(self.headers.get("Content-Length", 0))
+            body = json.loads(self.rfile.read(n) or b"{}")
+            res = answer(body.get("question", ""), body.get("context", {}))
+            data = json.dumps(res, ensure_ascii=False).encode("utf-8")
+            self.send_response(200)
+            self._cors()
+            self.send_header("Content-Type", "application/json; charset=utf-8")
+            self.send_header("Content-Length", str(len(data)))
             self.end_headers()
-            return
-        n = int(self.headers.get("Content-Length", 0))
-        body = json.loads(self.rfile.read(n) or b"{}")
-        res = answer(body.get("question", ""), body.get("context", {}))
-        data = json.dumps(res, ensure_ascii=False).encode("utf-8")
-        self.send_response(200)
-        self._cors()
-        self.send_header("Content-Type", "application/json; charset=utf-8")
-        self.send_header("Content-Length", str(len(data)))
-        self.end_headers()
-        self.wfile.write(data)
+            self.wfile.write(data)
+        except Exception as e:
+            import traceback
+            tb = traceback.format_exc()
+            err = json.dumps({"error": str(e), "traceback": tb}, ensure_ascii=False).encode("utf-8")
+            self.send_response(500)
+            self._cors()
+            self.send_header("Content-Type", "application/json; charset=utf-8")
+            self.send_header("Content-Length", str(len(err)))
+            self.end_headers()
+            self.wfile.write(err)
 
     def log_message(self, *a):
         pass
