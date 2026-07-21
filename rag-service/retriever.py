@@ -213,18 +213,20 @@ class SemanticRetriever(BaseRetriever):
         self._try_load()
 
     # ---------- 嵌入（DashScope /embeddings） ----------
-    def _embed_one_batch(self, texts):
+    def _embed_one_batch(self, texts, timeout=30):
         payload = {"model": self._model, "input": texts}
         headers = {
             "Authorization": f"Bearer {self._api_key}",
             "Content-Type": "application/json",
         }
         last_err = None
-        for attempt in range(3):
+        for attempt in range(2):
             try:
+                print(f"    · 调 embeddings 接口 (n={len(texts)}, attempt={attempt+1}, timeout={timeout}s)",
+                      flush=True)
                 resp = self._requests.post(
                     self._base_url + "/embeddings",
-                    json=payload, headers=headers, timeout=60,
+                    json=payload, headers=headers, timeout=timeout,
                 )
                 resp.raise_for_status()
                 data = resp.json()
@@ -232,17 +234,21 @@ class SemanticRetriever(BaseRetriever):
                 return [d["embedding"] for d in order]
             except Exception as e:  # noqa: BLE001
                 last_err = e
+                print(f"    ! 嵌入接口异常 (attempt {attempt+1}): {type(e).__name__}: {e}", flush=True)
         raise RuntimeError(f"embedding API 调用失败（{self._model}）: {last_err}")
 
     def _embed(self, texts):
+        total = (len(texts) + self._batch - 1) // self._batch
         out = []
-        for i in range(0, len(texts), self._batch):
+        for bi, i in enumerate(range(0, len(texts), self._batch)):
             batch = texts[i:i + self._batch]
+            print(f"[embed {bi + 1}/{total}] 提交 {len(batch)} 条文本做向量化", flush=True)
             try:
                 out.extend(self._embed_one_batch(batch))
             except Exception:  # noqa: BLE001
                 # 单批失败（可能该模型不接受数组 input）→ 逐条重试，保证不整体崩
                 if len(batch) > 1:
+                    print("  整批失败，改为逐条重试...", flush=True)
                     for t in batch:
                         out.extend(self._embed_one_batch([t]))
                 else:
@@ -283,6 +289,17 @@ class SemanticRetriever(BaseRetriever):
         self._docs = [(c["text"], c["metadata"]) for c in chunks]
         self._structs = [c["metadata"].get("structure", "") for c in chunks]
         texts = [d[0] for d in self._docs]
+        # 先做一次性连通性/鉴权探针（短超时），避免 17 批全卡在慢网络上无反馈：
+        # 若 DashScope 不可达 / key 错 / 模型名错，这里会在 ~30s 内快速失败并给出明确原因，
+        # 而不是傻等整轮嵌入（最坏 17 批 × 重试可能卡数十分钟）。
+        try:
+            print("先做嵌入连通性探针（短超时 15s）...", flush=True)
+            self._embed_one_batch(["连通性测试 ping"], timeout=15)
+        except Exception as e:  # noqa: BLE001
+            raise RuntimeError(
+                f"语义嵌入探针失败，请检查 OPENAI_API_KEY / OPENAI_BASE_URL / EMBEDDING_MODEL 是否正确，"
+                f"以及本机能否访问 DashScope：{e}"
+            )
         self._vecs = self._embed(texts)
         self._save()
 
