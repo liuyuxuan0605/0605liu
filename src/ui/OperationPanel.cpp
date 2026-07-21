@@ -128,16 +128,20 @@ OperationPanel::OperationPanel(QWidget* parent) : QWidget(parent) {
     v3->addWidget(speedLabel);
     root->addWidget(gbSpeed);
 
-    // --- Max Degree (only for BTree / BPlusTree) ---
+    // --- Max Degree (only for BTree / BPlusTree) --- radio buttons like reference UI ---
     m_degreeGroup = new QGroupBox("Max. Degree (阶)");
-    auto* dgrid = new QVBoxLayout(m_degreeGroup);
-    m_degreeSpin = new QSpinBox();
-    m_degreeSpin->setRange(2, 10);       // max 2~10 keys per node
-    m_degreeSpin->setValue(3);           // default: same as original hardcoded MAXK
-    m_degreeSpin->setToolTip("B树/B+树每节点最大键数。改后清空当前数据并重建。");
-    connect(m_degreeSpin, QOverload<int>::of(&QSpinBox::valueChanged), this,
-        [this](int v) { emit degreeChanged(v); });
-    dgrid->addWidget(m_degreeSpin);
+    auto* dgrid = new QHBoxLayout(m_degreeGroup);   // horizontal: radios in a row
+    m_degreeBtnGroup = new QButtonGroup(this);
+    m_degreeBtnGroup->setExclusive(true);
+    for (int d = DEGREE_MIN; d <= DEGREE_MAX; ++d) {
+        auto* rb = new QRadioButton(QString::number(d));
+        if (d == DEGREE_MIN) rb->setChecked(true);  // default: 3
+        m_degreeBtnGroup->addButton(rb, d);         // button id = degree value
+        m_degreeRadios.push_back(rb);
+        dgrid->addWidget(rb);
+    }
+    connect(m_degreeBtnGroup, QOverload<int>::of(&QButtonGroup::idClicked), this,
+        [this](int id) { emit degreeChanged(id); });
     m_degreeGroup->setVisible(false);   // only shown for BTree/BPlusTree
     root->addWidget(m_degreeGroup);
 

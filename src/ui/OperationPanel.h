@@ -6,8 +6,10 @@
 #include <QSlider>
 #include <QLabel>
 #include <QGroupBox>
-#include <QSpinBox>
+#include <QRadioButton>
+#include <QButtonGroup>
 #include <QStandardItemModel>
+#include <vector>
 #include "../core/Common.h"
 
 namespace dsv {
@@ -71,7 +73,10 @@ private:
     QPushButton* m_treeBfsBtn;
     QPushButton* m_treeDfsBtn;
     QGroupBox* m_degreeGroup;   // Max Degree (仅 BTree/BPlusTree 可见)
-    QSpinBox* m_degreeSpin;
+    QButtonGroup* m_degreeBtnGroup;  // radio button group for degree selection
+    std::vector<QRadioButton*> m_degreeRadios;  // radio buttons: 3,4,5,6,7
+    static constexpr int DEGREE_MIN = 3;
+    static constexpr int DEGREE_MAX = 7;
 };
 
 } // namespace dsv
