@@ -2,6 +2,8 @@
 #include <QMainWindow>
 #include <QGraphicsView>
 #include <QLabel>
+#include <QPluginLoader>
+#include <QDockWidget>
 #include <memory>
 #include <QVector>
 #include <QPair>

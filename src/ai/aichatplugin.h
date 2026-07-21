@@ -7,8 +7,10 @@
 #include <QNetworkReply>
 #include "aiplugininterface.h"
 
+namespace dsv {
 class StepAnimator;
 class DSScene;
+}
 
 // AI 讲解助教外挂。编译为独立插件(.dll/.so)，主程序不链接任何 AI/网络库。
 class AIChatPlugin : public QObject, public AIPluginInterface {
@@ -17,7 +19,7 @@ class AIChatPlugin : public QObject, public AIPluginInterface {
     Q_INTERFACES(AIPluginInterface)
 public:
     AIChatPlugin(QObject* parent = nullptr);
-    QWidget* createDock(StepAnimator* animator, DSScene* scene) override;
+    QWidget* createDock(dsv::StepAnimator* animator, dsv::DSScene* scene) override;
 
 private slots:
     void onFrameChanged(int index, int total, const QString& desc);
@@ -26,8 +28,8 @@ private slots:
 
 private:
     void postAsk(const QString& question, const QJsonObject& ctx);
-    StepAnimator* m_animator = nullptr;
-    DSScene* m_scene = nullptr;
+    dsv::StepAnimator* m_animator = nullptr;
+    dsv::DSScene* m_scene = nullptr;
     QTextEdit* m_log = nullptr;
     QLineEdit* m_input = nullptr;
     QNetworkAccessManager* m_net = nullptr;

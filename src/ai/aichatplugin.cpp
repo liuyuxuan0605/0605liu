@@ -15,7 +15,7 @@
 
 AIChatPlugin::AIChatPlugin(QObject* parent) : QObject(parent) {}
 
-QWidget* AIChatPlugin::createDock(StepAnimator* animator, DSScene* scene) {
+QWidget* AIChatPlugin::createDock(dsv::StepAnimator* animator, dsv::DSScene* scene) {
     m_animator = animator;
     m_scene = scene;
     m_net = new QNetworkAccessManager(this);
@@ -44,7 +44,7 @@ QWidget* AIChatPlugin::createDock(StepAnimator* animator, DSScene* scene) {
     connect(m_input, &QLineEdit::returnPressed, this, &AIChatPlugin::onAskClicked);
     connect(m_net, &QNetworkAccessManager::finished, this, &AIChatPlugin::onReply);
     if (m_animator)
-        connect(m_animator, &StepAnimator::frameChanged,
+        connect(m_animator, &dsv::StepAnimator::frameChanged,
                 this, &AIChatPlugin::onFrameChanged);
 
     return dock;
@@ -70,7 +70,7 @@ void AIChatPlugin::postAsk(const QString& question, const QJsonObject& ctx) {
     QJsonObject body;
     body["question"] = question;
     body["context"] = ctx;
-    QNetworkRequest req(QUrl(m_endpoint));
+    QNetworkRequest req = QNetworkRequest(QUrl(m_endpoint));
     req.setHeader(QNetworkRequest::ContentTypeHeader, "application/json");
     m_log->append("你: " + question);
     m_net->post(req, QJsonDocument(body).toJson());

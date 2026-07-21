@@ -8,6 +8,9 @@ TARGET = aichatplugin
 # 与主程序 bin/ 对齐：DSVisualizer.exe 在 bin/，插件在 bin/plugins/
 DESTDIR = $$PWD/../../bin/plugins
 
+# 链接主程序导出的符号（DSScene / StepAnimator），通过 EXE 生成的导入库
+win32: LIBS += -L$$PWD/../../bin -lDSVisualizer
+
 INCLUDEPATH += $$PWD/../visual $$PWD/../core
 DEPENDPATH  += $$PWD/../visual $$PWD/../core
 

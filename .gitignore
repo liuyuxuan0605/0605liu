@@ -6,6 +6,20 @@ __pycache__/
 # Build output
 build/
 bin/
+# qmake generated (in-source build) artifacts
+Makefile
+Makefile.Debug
+Makefile.Release
+.qmake.stash
+object_script.*
+debug/
+release/
+src/ai/Makefile
+src/ai/Makefile.Debug
+src/ai/Makefile.Release
+src/ai/debug/
+src/ai/release/
+
 # Agent working memory (private)
 .workbuddy/
 
