@@ -25,4 +25,5 @@ src/ai/release/
 
 rag-service/naive_index.pkl
 rag-service/.env
+rag-service/chroma_db/
 *.pkl

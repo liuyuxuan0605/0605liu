@@ -1,4 +1,4 @@
-"""检索器：naive(零依赖) 与 chroma(生产) 两种实现，统一接口。"""
+"""检索器：naive(零依赖关键词) 与 semantic(语义向量检索) 两种实现，统一接口。"""
 import os
 import pickle
 import math
@@ -70,6 +70,10 @@ class BaseRetriever:
 
     def query(self, text, k=4, structure=None):
         raise NotImplementedError
+
+    def count(self):
+        """已索引的文档数；语义模式用于判断是否需重建（缓存命中则跳过嵌入）。"""
+        return 0
 
     def save(self, path):
         raise NotImplementedError
@@ -170,46 +174,182 @@ class NaiveRetriever(BaseRetriever):
             self.docs = obj
             self._build_df()
 
+    def count(self):
+        return len(self.docs)
 
-class ChromaRetriever(BaseRetriever):
-    """生产级：chromadb 向量库 + sentence-transformers 嵌入。"""
 
-    def __init__(self, embedding_model, collection="dsv"):
-        from chromadb import Client
-        from chromadb.config import Settings
-        import sentence_transformers
+class SemanticRetriever(BaseRetriever):
+    """语义检索（生产级，零重依赖）：
 
-        self._st = sentence_transformers.SentenceTransformer(embedding_model)
-        self._client = Client(Settings(anonymized_telemetry=False))
-        self._col = self._client.get_or_create_collection(collection)
+    - 嵌入：调用 DashScope（通义千问）OpenAI 兼容的 /embeddings 接口
+      （text-embedding-v3），把知识库与提问都转成向量。
+    - 检索：本地纯 Python 余弦相似度（不依赖 numpy/chromadb/torch）。
+    - 缓存：向量落盘到 semantic_index.pkl；首次启动嵌入一次（按批调 API），
+      之后重启若 data/ 无更新则直接复用缓存，不再耗 API 调用。
+    - 结构过滤：对齐 naive 的宽松语义（structure 空=匹配任意），给定结构时精确过滤。
+
+    选择这套而不是 chromadb/sentence-transformers 的原因：本机环境装不动
+    torch/chromadb（网络/超时限制），而用户已有 DashScope key 且本就联网，
+    用 API 做嵌入既省本地算力、又与 chat 厂商解耦，效果等价于语义向量检索。
+    """
+
+    def __init__(self, api_key, base_url, embedding_model="text-embedding-v3",
+                 data_dir=None, cache_path=None, batch_size=32):
+        import requests
+        self._api_key = api_key
+        self._base_url = base_url.rstrip("/")
+        self._model = embedding_model
+        self._requests = requests
+        self._batch = batch_size
+        self._data_dir = data_dir
+        self._cache_path = cache_path or os.path.join(
+            os.path.dirname(os.path.abspath(__file__)), "semantic_index.pkl"
+        )
+        # 内存态：docs(text,meta) / vecs / structs
+        self._docs = []
+        self._vecs = []
+        self._structs = []
+        self._try_load()
+
+    # ---------- 嵌入（DashScope /embeddings） ----------
+    def _embed_one_batch(self, texts):
+        payload = {"model": self._model, "input": texts}
+        headers = {
+            "Authorization": f"Bearer {self._api_key}",
+            "Content-Type": "application/json",
+        }
+        last_err = None
+        for attempt in range(3):
+            try:
+                resp = self._requests.post(
+                    self._base_url + "/embeddings",
+                    json=payload, headers=headers, timeout=60,
+                )
+                resp.raise_for_status()
+                data = resp.json()
+                order = sorted(data.get("data", []), key=lambda d: d["index"])
+                return [d["embedding"] for d in order]
+            except Exception as e:  # noqa: BLE001
+                last_err = e
+        raise RuntimeError(f"embedding API 调用失败（{self._model}）: {last_err}")
 
     def _embed(self, texts):
-        return self._st.encode(texts).tolist()
+        out = []
+        for i in range(0, len(texts), self._batch):
+            batch = texts[i:i + self._batch]
+            try:
+                out.extend(self._embed_one_batch(batch))
+            except Exception:  # noqa: BLE001
+                # 单批失败（可能该模型不接受数组 input）→ 逐条重试，保证不整体崩
+                if len(batch) > 1:
+                    for t in batch:
+                        out.extend(self._embed_one_batch([t]))
+                else:
+                    raise
+        return out
+
+    # ---------- 索引 / 缓存 ----------
+    def _cache_is_stale(self):
+        if not os.path.exists(self._cache_path):
+            return True
+        cache_mtime = os.path.getmtime(self._cache_path)
+        if not self._data_dir:
+            return False
+        for sub in ("interview", "notes", "generated", "open"):
+            d = os.path.join(self._data_dir, sub)
+            if not os.path.isdir(d):
+                continue
+            for fp in glob.glob(os.path.join(d, "*.md")):
+                if os.path.getmtime(fp) > cache_mtime:
+                    return True
+        return False
+
+    def _try_load(self):
+        if not os.path.exists(self._cache_path) or self._cache_is_stale():
+            return
+        try:
+            with open(self._cache_path, "rb") as f:
+                obj = pickle.load(f)
+            self._docs = obj["docs"]
+            self._vecs = obj["vecs"]
+            self._structs = obj.get("structs",
+                                    [m.get("structure", "") for _, m in self._docs])
+        except Exception:
+            # 缓存损坏则作废，交给 add() 重建
+            self._docs, self._vecs, self._structs = [], [], []
 
     def add(self, chunks):
-        ids, docs, metas = [], [], []
-        for i, c in enumerate(chunks):
-            ids.append(f"c{i}")
-            docs.append(c["text"])
-            metas.append({k: str(v) for k, v in c["metadata"].items()})
-        self._col.add(ids=ids, documents=docs, metas=metas)
+        self._docs = [(c["text"], c["metadata"]) for c in chunks]
+        self._structs = [c["metadata"].get("structure", "") for c in chunks]
+        texts = [d[0] for d in self._docs]
+        self._vecs = self._embed(texts)
+        self._save()
 
-    def query(self, text, k=4, structure=None):
-        emb = self._embed([text])[0]
-        where = {"structure": structure} if structure else None
-        res = self._col.query(query_embeddings=[emb], n_results=k, where=where)
+    def _save(self):
+        with open(self._cache_path, "wb") as f:
+            pickle.dump(
+                {"docs": self._docs, "vecs": self._vecs, "structs": self._structs},
+                f,
+            )
+
+    def count(self):
+        return len(self._docs)
+
+    # ---------- 检索 ----------
+    @staticmethod
+    def _cosine(a, b):
+        dot = 0.0
+        na = 0.0
+        nb = 0.0
+        for x, y in zip(a, b):
+            dot += x * y
+            na += x * x
+            nb += y * y
+        if na == 0.0 or nb == 0.0:
+            return 0.0
+        return dot / (na ** 0.5 * nb ** 0.5)
+
+    def query(self, text, k=5, structure=None):
+        qv = self._embed([text])[0]
+        scored = []
+        for i, (vec, st) in enumerate(zip(self._vecs, self._structs)):
+            # 结构过滤：给定结构时跳过声明了不同结构的文档；
+            # 结构为空/未声明 → 匹配任意（对齐 naive 宽松语义，ODS 通用文档可召回）
+            if structure and st and st != structure:
+                continue
+            sim = self._cosine(qv, vec)
+            scored.append((sim, i))
+        scored.sort(key=lambda x: -x[0])
+        top = scored[:k]
+        # 结构过滤无结果时回退全库，保证总有资料可答
+        if not top and structure:
+            scored = sorted(
+                ((self._cosine(qv, vec), i) for i, vec in enumerate(self._vecs)),
+                key=lambda x: -x[0],
+            )
+            top = scored[:k]
         hits = []
-        for doc, meta, dist in zip(res["documents"][0], res["metadatas"][0], res["distances"][0]):
-            hits.append(Hit(doc, meta, 1.0 - dist, q_match=True))
-        # 结构过滤无结果时回退全库
-        if not hits and structure:
-            res = self._col.query(query_embeddings=[emb], n_results=k)
-            for doc, meta, dist in zip(res["documents"][0], res["metadatas"][0], res["distances"][0]):
-                hits.append(Hit(doc, meta, 1.0 - dist, q_match=True))
+        for sim, i in top:
+            text_i, meta_i = self._docs[i]
+            hits.append(Hit(text_i, meta_i, float(sim), best_idf=0.0, q_match=True))
         return hits
 
 
-def build_retriever(kind, embedding_model=None):
-    if kind == "chroma":
-        return ChromaRetriever(embedding_model)
+def build_retriever(kind, embedding_model=None, api_key="", base_url="", data_dir=None):
+    """kind: naive(零依赖) | chroma/semantic(语义向量检索)。
+
+    语义模式需要 api_key（调 DashScope embeddings）。若未提供 key，
+    自动降级为 NaiveRetriever，保证服务仍可启动（只是检索退化为关键词）。
+    """
+    if kind in ("chroma", "semantic"):
+        if not api_key:
+            print("[WARN] RETRIEVER=semantic 但未配置 OPENAI_API_KEY，降级为 naive 关键词检索",
+                  flush=True)
+            return NaiveRetriever()
+        return SemanticRetriever(
+            api_key=api_key,
+            base_url=base_url,
+            embedding_model=embedding_model or "text-embedding-v3",
+            data_dir=data_dir,
+        )
     return NaiveRetriever()

@@ -37,23 +37,41 @@ def _index_is_stale():
 
 print("building retriever ...", flush=True)
 _chunks = load_chunks(DATA_DIR)
-_retriever = build_retriever(RETRIEVER, EMBEDDING_MODEL)
-if isinstance(_retriever, NaiveRetriever):
+try:
+    _retriever = build_retriever(
+        RETRIEVER, EMBEDDING_MODEL,
+        api_key=OPENAI_API_KEY, base_url=OPENAI_BASE_URL, data_dir=DATA_DIR,
+    )
+    if isinstance(_retriever, NaiveRetriever):
+        if os.path.exists(INDEX_PATH) and not _index_is_stale():
+            _retriever.load(INDEX_PATH)
+            print(f"loaded naive index ({len(_retriever.docs)} docs)", flush=True)
+        else:
+            _retriever.add(_chunks)
+            _retriever.save(INDEX_PATH)
+            print(f"rebuilt naive index ({len(_retriever.docs)} docs)", flush=True)
+    else:
+        # 语义检索：__init__ 已尝试加载本地向量缓存；count()==0 说明需首次/重建嵌入
+        if _retriever.count() == 0:
+            _retriever.add(_chunks)
+            print(f"built semantic index via {EMBEDDING_MODEL} ({_retriever.count()} docs)", flush=True)
+        else:
+            print(f"reused semantic cache ({_retriever.count()} docs, persistent)", flush=True)
+except Exception as e:  # noqa: BLE001
+    # 语义检索失败（如 key 无效 / 网络不可达），降级为关键词检索，保证服务可用
+    print(f"[WARN] 语义检索构建失败（{e}），降级为 naive 关键词检索", flush=True)
+    _retriever = NaiveRetriever()
     if os.path.exists(INDEX_PATH) and not _index_is_stale():
         _retriever.load(INDEX_PATH)
-        print(f"loaded naive index ({len(_retriever.docs)} docs)", flush=True)
     else:
         _retriever.add(_chunks)
         _retriever.save(INDEX_PATH)
-        print(f"rebuilt naive index ({len(_retriever.docs)} docs)", flush=True)
-else:
-    _retriever.add(_chunks)
-print(f"retriever={RETRIEVER} llm={LLM_PROVIDER}", flush=True)
+print(f"retriever={RETRIEVER} llm={LLM_PROVIDER} embedding={EMBEDDING_MODEL}", flush=True)
 
 
 def answer(question, context):
     structure = context.get("structure", "") if isinstance(context, dict) else ""
-    hits = _retriever.query(question, k=4, structure=structure or None)
+    hits = _retriever.query(question, k=5, structure=structure or None)
     ans, hl, src = call_llm(
         question, hits, context, LLM_PROVIDER, OPENAI_API_KEY, OPENAI_BASE_URL, OPENAI_MODEL
     )

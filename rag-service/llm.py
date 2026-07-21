@@ -9,23 +9,28 @@ import json
 import urllib.request
 
 
+SYSTEM_PROMPT = """你是一个数据结构可视化教学助教，面向正在准备技术面试的学习者。
+回答原则：
+1. 严格依据下面提供的【检索资料】作答，不要编造资料以外的知识点或伪造成功/失败案例。
+2. 如果检索资料不足以回答，坦诚说明“资料里没讲清楚这部分”，不要硬编。
+3. 用中文，简洁、有结构（必要时用步骤/要点），面向“面试怎么答”讲清原理与触发条件。
+4. 若回答涉及图里的具体节点，在 highlight_nodes 给出这些节点的整数值。"""
+
+
 def build_prompt(question, hits, context):
     ctx_text = context if isinstance(context, str) else json.dumps(context, ensure_ascii=False)
     knowledge = "\n\n".join(
         f"[资料 {i+1} | {h.metadata.get('source','')} | {h.metadata.get('structure','')}]\n{h.text}"
         for i, h in enumerate(hits)
     )
-    return f"""你是一个数据结构可视化教学助教。根据下面的检索资料回答用户问题。
-当前可视化上下文：{ctx_text}
+    return f"""当前可视化上下文：{ctx_text}
 
 检索资料：
 {knowledge}
 
-要求：
-1. 用中文简洁回答，结合资料。
-2. 如果回答中涉及图里的具体节点，请在 highlight_nodes 中给出这些节点的“值”(整数)，例如涉及节点20就写20。
-3. 只输出 JSON，格式：{{"answer": "...", "highlight_nodes": [整数...], "sources": ["资料来源文件名"]}}
-"""
+用户问题：{question}
+
+请只输出 JSON，格式：{{"answer": "你的讲解", "highlight_nodes": [涉及的整数节点值...], "sources": ["资料来源文件名..."]}}"""
 
 
 def _extract_ints(text):
@@ -34,7 +39,11 @@ def _extract_ints(text):
 
 def call_llm(question, hits, context, provider="offline", api_key="", base_url="", model=""):
     if provider != "offline" and api_key:
-        return _call_openai(question, hits, context, api_key, base_url, model)
+        ans, hl, src = _call_openai(question, hits, context, api_key, base_url, model)
+        if not ans.startswith("[LLM 调用失败"):
+            return ans, hl, src
+        # API 调用失败（key 无效 / 网络不可达）→ 降级为离线拼接，至少把检索资料给用户
+        print("[WARN] openai 调用失败，降级为离线拼接答案", flush=True)
 
     # 离线兜底：直接把检索到的资料拼接成答案
     # 相关性闸门：只有"查询里语料稀有的词被真正命中"（h.q_match）才视为相关，
@@ -43,7 +52,7 @@ def call_llm(question, hits, context, provider="offline", api_key="", base_url="
     relevant = bool(top) and any(h.q_match for h in top)
     if not relevant:
         answer = ("【离线模式】未在知识库中找到与问题直接相关的内容。"
-                  "可切换到 chroma 语义检索或 openai 模式以获得更准的答案。")
+                  "可切换到 semantic 语义检索或 openai 模式以获得更准的答案。")
     else:
         parts = []
         for h in top[:2]:
@@ -59,7 +68,11 @@ def _call_openai(question, hits, context, api_key, base_url, model):
     prompt = build_prompt(question, hits, context)
     payload = {
         "model": model,
-        "messages": [{"role": "user", "content": prompt}],
+        "messages": [
+            {"role": "system", "content": SYSTEM_PROMPT},
+            {"role": "user", "content": prompt},
+        ],
+        "temperature": 0.3,
         "response_format": {"type": "json_object"},
     }
     req = urllib.request.Request(
@@ -72,6 +85,12 @@ def _call_openai(question, hits, context, api_key, base_url, model):
         with urllib.request.urlopen(req, timeout=30) as resp:
             data = json.loads(resp.read().decode("utf-8"))
         content = data["choices"][0]["message"]["content"]
+        # 部分厂商会在 JSON 外包 ```json 围栏，解析前剥离
+        content = content.strip()
+        if content.startswith("```"):
+            content = content.split("```", 2)[1]
+            if content.lower().startswith("json"):
+                content = content[4:]
         obj = json.loads(content)
         return obj.get("answer", ""), obj.get("highlight_nodes", []), obj.get("sources", [])
     except Exception as e:  # noqa: BLE001
