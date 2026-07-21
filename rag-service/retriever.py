@@ -210,6 +210,7 @@ class SemanticRetriever(BaseRetriever):
         self._docs = []
         self._vecs = []
         self._structs = []
+        self._dim = None  # 向量维度，由探针/首次成功嵌入确定，用于单条失败时的零向量对齐
         self._try_load()
 
     # ---------- 嵌入（DashScope /embeddings） ----------
@@ -243,17 +244,31 @@ class SemanticRetriever(BaseRetriever):
         for bi, i in enumerate(range(0, len(texts), self._batch)):
             batch = texts[i:i + self._batch]
             print(f"[embed {bi + 1}/{total}] 提交 {len(batch)} 条文本做向量化", flush=True)
-            try:
-                out.extend(self._embed_one_batch(batch))
-            except Exception:  # noqa: BLE001
-                # 单批失败（可能该模型不接受数组 input）→ 逐条重试，保证不整体崩
-                if len(batch) > 1:
-                    print("  整批失败，改为逐条重试...", flush=True)
-                    for t in batch:
-                        out.extend(self._embed_one_batch([t]))
-                else:
-                    raise
+            out.extend(self._embed_with_fallback(batch))
         return out
+
+    def _embed_with_fallback(self, batch):
+        """整批嵌入；失败时按原因恢复，保证最终返回与 batch 等长的向量列表。
+
+        - 整批 400（DashScope 对单次请求的文本条数/总 token 有限制）：对半拆分重试，
+          自动收敛到该接口能接受的最大批大小，避免退化成逐条慢速。
+        - 单条仍失败（如文本超长）：截断到 1500 字符再试；仍失败则补零向量，
+          保证 self._vecs 与 self._docs 长度对齐，检索余弦不会错位。
+        """
+        try:
+            return self._embed_one_batch(batch)
+        except Exception:  # noqa: BLE001
+            if len(batch) <= 1:
+                txt = batch[0] if batch else ""
+                try:
+                    return self._embed_one_batch([txt[:1500]])
+                except Exception as e:  # noqa: BLE001
+                    print(f"  ! 单条嵌入最终失败，补零向量跳过: {e}", flush=True)
+                    dim = self._dim or 0
+                    return [[0.0] * dim] if dim else []
+            # 整批失败 → 对半拆分，分别重试
+            mid = len(batch) // 2
+            return self._embed_with_fallback(batch[:mid]) + self._embed_with_fallback(batch[mid:])
 
     # ---------- 索引 / 缓存 ----------
     def _cache_is_stale(self):
@@ -294,7 +309,8 @@ class SemanticRetriever(BaseRetriever):
         # 而不是傻等整轮嵌入（最坏 17 批 × 重试可能卡数十分钟）。
         try:
             print("先做嵌入连通性探针（短超时 15s）...", flush=True)
-            self._embed_one_batch(["连通性测试 ping"], timeout=15)
+            probe_vec = self._embed_one_batch(["连通性测试 ping"], timeout=15)[0]
+            self._dim = len(probe_vec)
         except Exception as e:  # noqa: BLE001
             raise RuntimeError(
                 f"语义嵌入探针失败，请检查 OPENAI_API_KEY / OPENAI_BASE_URL / EMBEDDING_MODEL 是否正确，"
