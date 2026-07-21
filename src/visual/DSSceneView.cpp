@@ -23,8 +23,8 @@ void DSSceneView::wheelEvent(QWheelEvent* event) {
         m_zoomFactor = newScale;
 
         // Zoom centered on the point under the mouse cursor
-        QPointF targetScenePos = mapToScene(event->position().toPointF());
-        QPointF targetViewportPos = event->position().toPointF();
+        QPointF targetScenePos = mapToScene(event->posF());
+        QPointF targetViewportPos = event->posF();
 
         scale(factor, factor);
 
