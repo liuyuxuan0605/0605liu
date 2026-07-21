@@ -37,14 +37,19 @@ def call_llm(question, hits, context, provider="offline", api_key="", base_url="
         return _call_openai(question, hits, context, api_key, base_url, model)
 
     # 离线兜底：直接把检索到的资料拼接成答案
+    # 相关性闸门：只有"查询里语料稀有的词被真正命中"（h.q_match）才视为相关，
+    # 否则老实说"库里没相关的"，拦掉靠超长文档兜底万能匹配的问题。
     top = hits[:3]
-    if not top:
+    relevant = bool(top) and any(h.q_match for h in top)
+    if not relevant:
         answer = ("【离线模式】未在知识库中找到与问题直接相关的内容。"
                   "可切换到 chroma 语义检索或 openai 模式以获得更准的答案。")
     else:
-        answer = "【离线模式·检索到的资料】\n\n" + "\n\n".join(
-            f"· ({h.metadata.get('source','')}) {h.text[:400]}" for h in top
-        )
+        parts = []
+        for h in top[:2]:
+            src = h.metadata.get("source", "")
+            parts.append(f"· ({src}) {h.text[:600]}")
+        answer = "【离线模式·检索到的资料】\n\n" + "\n\n".join(parts)
     highlight = _extract_ints(question)
     sources = [h.metadata.get("source", "") for h in top]
     return answer, highlight, sources

@@ -7,6 +7,7 @@
 import json
 import os
 import sys
+import glob
 import traceback
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
@@ -19,16 +20,34 @@ from config import (
     DATA_DIR, INDEX_PATH, EMBEDDING_MODEL, PORT,
 )
 
+def _index_is_stale():
+    """data/ 下任意 .md 比索引新 → 索引过期，需重建。"""
+    if not os.path.exists(INDEX_PATH):
+        return True
+    pk_mtime = os.path.getmtime(INDEX_PATH)
+    for sub in ("interview", "notes", "generated", "open"):
+        d = os.path.join(DATA_DIR, sub)
+        if not os.path.isdir(d):
+            continue
+        for fp in glob.glob(os.path.join(d, "*.md")):
+            if os.path.getmtime(fp) > pk_mtime:
+                return True
+    return False
+
+
 print("building retriever ...", flush=True)
 _chunks = load_chunks(DATA_DIR)
 _retriever = build_retriever(RETRIEVER, EMBEDDING_MODEL)
-if isinstance(_retriever, NaiveRetriever) and os.path.exists(INDEX_PATH):
-    _retriever.load(INDEX_PATH)
-    print(f"loaded naive index ({len(_retriever.docs)} docs)", flush=True)
+if isinstance(_retriever, NaiveRetriever):
+    if os.path.exists(INDEX_PATH) and not _index_is_stale():
+        _retriever.load(INDEX_PATH)
+        print(f"loaded naive index ({len(_retriever.docs)} docs)", flush=True)
+    else:
+        _retriever.add(_chunks)
+        _retriever.save(INDEX_PATH)
+        print(f"rebuilt naive index ({len(_retriever.docs)} docs)", flush=True)
 else:
     _retriever.add(_chunks)
-    if isinstance(_retriever, NaiveRetriever):
-        _retriever.save(INDEX_PATH)
 print(f"retriever={RETRIEVER} llm={LLM_PROVIDER}", flush=True)
 
 
