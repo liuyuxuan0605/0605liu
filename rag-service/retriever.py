@@ -300,6 +300,28 @@ class SemanticRetriever(BaseRetriever):
             # 缓存损坏则作废，交给 add() 重建
             self._docs, self._vecs, self._structs = [], [], []
 
+    def _calibrate_batch(self, texts):
+        """用真实文档（取最长的若干篇）二分确定 DashScope 单次能接受的最大批大小。
+
+        原因：text-embedding-v3 对单次请求的总 token 有限制，本知识库里长文档
+        （ODS 教材整页）多，32 条打包稳定 400、16 条也 400、8 条才过。若不校准，
+        每个 32 批次都会先试 32/16 再落到 8，白打一堆 400 且慢。
+        用最长文档做样本校准，得到的大小对所有（更短的）文档都安全。
+        """
+        # 取最长的若干篇做样本（长文档最易触发 token 上限，校准结果对短文档也安全）
+        sample_pool = sorted(texts, key=len, reverse=True)[: max(1, self._batch)]
+        lo, hi = 1, min(self._batch, len(sample_pool))
+        best = 1
+        while lo <= hi:
+            mid = (lo + hi) // 2
+            try:
+                self._embed_one_batch(sample_pool[:mid], timeout=15)
+                best = mid
+                lo = mid + 1
+            except Exception:  # noqa: BLE001
+                hi = mid - 1
+        return max(1, best)
+
     def add(self, chunks):
         self._docs = [(c["text"], c["metadata"]) for c in chunks]
         self._structs = [c["metadata"].get("structure", "") for c in chunks]
@@ -316,6 +338,9 @@ class SemanticRetriever(BaseRetriever):
                 f"语义嵌入探针失败，请检查 OPENAI_API_KEY / OPENAI_BASE_URL / EMBEDDING_MODEL 是否正确，"
                 f"以及本机能否访问 DashScope：{e}"
             )
+        # 用最长真实文档校准最大批大小，之后所有批次直接用该大小，避免每批反复试大批次打 400
+        self._batch = self._calibrate_batch(texts)
+        print(f"校准批大小={self._batch}（DashScope 单次请求上限）", flush=True)
         self._vecs = self._embed(texts)
         self._save()
 
