@@ -1,5 +1,6 @@
 """检索器：naive(零依赖关键词) 与 semantic(语义向量检索) 两种实现，统一接口。"""
 import os
+import glob
 import pickle
 import math
 import re
