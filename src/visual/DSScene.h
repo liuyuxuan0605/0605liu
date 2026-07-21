@@ -17,6 +17,7 @@ public:
     explicit DSScene(QObject* parent = nullptr);
 
     void setKind(DSKind kind) { m_kind = kind; }
+    DSKind kind() const { return m_kind; }
     void setViewSize(double w, double h) { m_viewW = w; m_viewH = h; }
 
     // Render a single frame. `animated` controls transition vs instant set.

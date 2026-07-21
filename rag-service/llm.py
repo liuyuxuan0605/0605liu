@@ -48,7 +48,7 @@ def call_llm(question, hits, context, provider="offline", api_key="", base_url="
         parts = []
         for h in top[:2]:
             src = h.metadata.get("source", "")
-            parts.append(f"· ({src}) {h.text[:600]}")
+            parts.append(f"· ({src}) {h.text[:1200]}")
         answer = "【离线模式·检索到的资料】\n\n" + "\n\n".join(parts)
     highlight = _extract_ints(question)
     sources = [h.metadata.get("source", "") for h in top]

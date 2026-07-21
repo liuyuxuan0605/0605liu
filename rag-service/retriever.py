@@ -27,6 +27,43 @@ def _terms(s):
     return terms
 
 
+# 查询同义词扩展：中文口语词映射到检索语料里真正出现的词，
+# 让"翻转"也能命中写的是"旋转"的笔记，"加"也能命中写"插入"的笔记。
+_SYNONYMS = {
+    "翻转": ["旋转", "rotate", "左旋", "右旋", "双旋"],
+    "旋转": ["翻转", "rotate", "左旋", "右旋", "双旋"],
+    "加": ["插入", "insert"],
+    "加入": ["插入", "insert"],
+    "添加": ["插入", "insert"],
+    "插入": ["旋转", "加"],
+    "左旋": ["旋转", "翻转", "rotate"],
+    "右旋": ["旋转", "翻转", "rotate"],
+    "双旋": ["旋转", "翻转", "rotate"],
+    "叔叔": ["叔节点", "uncle"],
+    "红红": ["红红冲突", "recolor"],
+    "重新着色": ["recolor", "旋转"],
+}
+
+
+def _expand_terms(s):
+    terms = _terms(s)
+    for trigger, adds in _SYNONYMS.items():
+        if trigger in s:
+            for a in adds:
+                terms |= _terms(a)
+    return terms
+
+
+def _detect_topic(text):
+    """从问题里粗判数据结构话题，用于同话题笔记加权。"""
+    t = text.lower()
+    if "红黑" in text or "redblack" in t or "red-black" in t or " rb" in t or t.startswith("rb"):
+        return "RedBlackTree"
+    if "avl" in t:
+        return "AVLTree"
+    return ""
+
+
 class BaseRetriever:
     def add(self, chunks):
         raise NotImplementedError
@@ -72,7 +109,8 @@ class NaiveRetriever(BaseRetriever):
         return math.log((self._N + 1) / (self._df.get(t, 0) + 1)) + 1.0
 
     def query(self, text, k=4, structure=None):
-        q = _terms(text)
+        q = _expand_terms(text)
+        topic = _detect_topic(text)
 
         def _score(filter_struct):
             scored = []
@@ -97,6 +135,10 @@ class NaiveRetriever(BaseRetriever):
                     score *= 0.4
                 elif src_prefix.startswith("open/ods"):
                     score *= 1.6
+                # 话题加权：问题明显指向某类结构（红黑树 / AVL）时，
+                # 同话题笔记再加成，避免被"旋转"这个通用词拉来别的树的笔记。
+                if topic and sm == topic:
+                    score *= 1.3
                 best_idf = max((self._idf(t) for t in inter), default=0.0)
                 # 相关性闸门依据：查询里"语料稀有"的词，至少命中 2 个才算相关。
                 # 单字命中太松——超长《面试逐字稿》几乎能撞上任意稀有字变成万能兜底。

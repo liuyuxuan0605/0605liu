@@ -1,6 +1,7 @@
 #include "aichatplugin.h"
 #include "../visual/StepAnimator.h"
 #include "../visual/DSScene.h"
+#include "../core/Factory.h"
 
 #include <QVBoxLayout>
 #include <QHBoxLayout>
@@ -58,11 +59,13 @@ QWidget* AIChatPlugin::createDock(dsv::StepAnimator* animator, dsv::DSScene* sce
 }
 
 void AIChatPlugin::onFrameChanged(int index, int total, const QString& desc) {
-    // 自动跟随：把当前帧描述作为上下文，让 RAG 解释“这一步在做什么”
+    // 自动跟随：把当前帧描述 + 当前数据结构类型作为上下文，让 RAG 解释“这一步在做什么”
     QJsonObject ctx;
     ctx["desc"] = desc;
     ctx["index"] = index;
     ctx["total"] = total;
+    if (m_scene)
+        ctx["structure"] = QString::fromUtf8(dsv::kindToString(m_scene->kind()));
     postAsk(desc, ctx);
 }
 
@@ -70,7 +73,12 @@ void AIChatPlugin::onAskClicked() {
     QString q = m_input->text().trimmed();
     if (q.isEmpty()) return;
     m_input->clear();
-    postAsk(q, QJsonObject());
+    // 把当前正在可视化的数据结构类型带上，让服务端检索器按结构过滤
+    // （看红黑树时不返回 AVL 的旋转笔记，反之亦然）
+    QJsonObject ctx;
+    if (m_scene)
+        ctx["structure"] = QString::fromUtf8(dsv::kindToString(m_scene->kind()));
+    postAsk(q, ctx);
 }
 
 void AIChatPlugin::postAsk(const QString& question, const QJsonObject& ctx) {
