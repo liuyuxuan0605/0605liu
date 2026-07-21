@@ -86,10 +86,17 @@ class NaiveRetriever(BaseRetriever):
                     continue
                 # IDF 加权求和
                 score = sum(self._idf(t) for t in inter)
-                # 超长《面试逐字稿》是"万能兜底"，容易靠体量胜出；
-                # 对它轻微降权，让"有专门文档"的问题优先展示专门文档。
-                if str(meta.get("source", "")).startswith("interview/"):
-                    score *= 0.5
+                # 来源加权：
+                # - 面试口语笔记（interview/）含大量常见中文词，容易蹭分胜出，
+                #   进一步降权，避免它盖过更专业的文档；
+                # - 教科书《Open Data Structures》(open/ods) 是权威来源，适当加权，
+                #   让中文提问也能召回这本英文书的内容。
+                # 注意 source 在 Windows 上是反斜杠，先统一为正斜杠再判断。
+                src_prefix = str(meta.get("source", "")).replace("\\", "/")
+                if src_prefix.startswith("interview/"):
+                    score *= 0.4
+                elif src_prefix.startswith("open/ods"):
+                    score *= 1.6
                 best_idf = max((self._idf(t) for t in inter), default=0.0)
                 # 相关性闸门依据：查询里"语料稀有"的词，至少命中 2 个才算相关。
                 # 单字命中太松——超长《面试逐字稿》几乎能撞上任意稀有字变成万能兜底。

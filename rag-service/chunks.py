@@ -50,7 +50,14 @@ def load_chunks(data_dir):
         with open(fp, "r", encoding="utf-8") as f:
             raw = f.read()
         meta, body = parse_frontmatter(raw)
-        structure = meta.get("structure") or os.path.splitext(os.path.basename(fp))[0]
+        # 尊重 frontmatter 中显式声明的 structure：
+        # - structure: AVLTree 等具体名 → 仅在看该结构时召回
+        # - structure: （空值，即 "structure:" 后无内容）→ 通用文档，任意结构均可命中
+        # - 不写 structure → 回退用文件名（保持旧行为）
+        if "structure" in meta:
+            structure = meta["structure"]
+        else:
+            structure = os.path.splitext(os.path.basename(fp))[0]
 
         parts = re.split(r"(?m)^#{1,3}\s+(.*)$", body)
         heading = "概览"
