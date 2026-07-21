@@ -67,9 +67,20 @@ class _Handler(BaseHTTPRequestHandler):
             n = int(n_str)
 
             raw = self.rfile.read(n)
-            print(f"[DEBUG] read {len(raw)} bytes, hex={raw[:80].hex()!r}", file=sys.stderr, flush=True)
+            print(f"[DEBUG] read {len(raw)} bytes", file=sys.stderr, flush=True)
 
-            body = json.loads(raw if raw else b"{}")
+            # decode: try utf-8 first (Qt client / proper tools),
+            # fall back to gbk (Windows curl sends Chinese in GBK by default)
+            text = None
+            for enc in ("utf-8", "gbk", "latin-1"):
+                try:
+                    text = raw.decode(enc)
+                    break
+                except UnicodeDecodeError:
+                    continue
+            if text is None:
+                text = raw.decode("utf-8", errors="replace")
+            body = json.loads(text if text else "{}")
             question = body.get("question", "")
             context = body.get("context", {})
             print(f"[DEBUG] question={question!r}", file=sys.stderr, flush=True)
