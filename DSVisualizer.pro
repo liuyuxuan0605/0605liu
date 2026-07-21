@@ -14,6 +14,9 @@ QT += widgets
 TARGET  = DSVisualizer
 TEMPLATE = app
 
+# 统一产物到 bin/，与 AI 插件对齐，便于 QPluginLoader 定位
+DESTDIR = $$PWD/bin
+
 # C++17 (MinGW 7.3 supports it)
 CONFIG += c++17
 QMAKE_CXXFLAGS += -std=c++17

@@ -5,6 +5,7 @@ __pycache__/
 *.pyc
 # Build output
 build/
+bin/
 # Agent working memory (private)
 .workbuddy/
 

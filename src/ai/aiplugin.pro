@@ -5,7 +5,8 @@ TEMPLATE = lib
 CONFIG += plugin
 QT += core network widgets
 TARGET = aichatplugin
-DESTDIR = $$PWD/../plugins
+# 与主程序 bin/ 对齐：DSVisualizer.exe 在 bin/，插件在 bin/plugins/
+DESTDIR = $$PWD/../../bin/plugins
 
 INCLUDEPATH += $$PWD/../visual $$PWD/../core
 DEPENDPATH  += $$PWD/../visual $$PWD/../core

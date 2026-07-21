@@ -11,6 +11,11 @@
 #include <QLabel>
 #include <QStatusBar>
 #include <QPair>
+#include <QPluginLoader>
+#include <QDir>
+#include <QFile>
+#include <QDebug>
+#include <QDockWidget>
 
 namespace dsv {
 
@@ -80,6 +85,9 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
     // initial structure
     switchKind(static_cast<int>(DSKind::SinglyLinkedList));
     updateStatus();
+
+    // 外挂：尝试加载 AI 讲解插件（DLL 不存在 / 加载失败 → 静默跳过，程序照常运行）
+    loadAiPlugin();
 }
 
 void MainWindow::switchKind(int index) {
@@ -434,6 +442,52 @@ void MainWindow::onFrameChanged(int index, int total, const QString& desc) {
 void MainWindow::toggleTheme() {
     m_dark = !m_dark;
     applyTheme(m_dark);
+}
+
+void MainWindow::loadAiPlugin() {
+    // 外挂核心：DLL 不在这些候选路径中 → 直接返回，主程序零 AI 依赖照常运行
+    QString exeDir = QCoreApplication::applicationDirPath();
+    QStringList candidates = {
+        exeDir + "/plugins/aichatplugin.dll",
+        exeDir + "/aichatplugin.dll",
+        QDir(exeDir).filePath("../src/plugins/aichatplugin.dll"),
+        QDir(exeDir).filePath("../../src/plugins/aichatplugin.dll"),
+        QDir(exeDir).filePath("../../../src/plugins/aichatplugin.dll"),
+    };
+    QString path;
+    for (const auto& c : candidates) {
+        if (QFile::exists(c)) { path = c; break; }
+    }
+    if (path.isEmpty()) {
+        qDebug() << "[AI] aichatplugin.dll not found in" << candidates
+                 << "-> AI tutor disabled (program runs normally).";
+        return;
+    }
+
+    // 必须保持 loader 存活，否则插件在 MainWindow 析构前就被卸载，Dock 控件悬空崩溃
+    m_aiLoader = new QPluginLoader(path, this);
+    QObject* inst = m_aiLoader->instance();
+    if (!inst) {
+        qDebug() << "[AI] plugin load failed:" << m_aiLoader->errorString();
+        return;
+    }
+    m_aiPlugin = qobject_cast<AIPluginInterface*>(inst);
+    if (!m_aiPlugin) {
+        qDebug() << "[AI] plugin does not implement AIPluginInterface";
+        return;
+    }
+
+    QWidget* dock = m_aiPlugin->createDock(m_animator, m_scene);
+    if (!dock) {
+        qDebug() << "[AI] createDock() returned null";
+        return;
+    }
+    m_aiDock = new QDockWidget("AI 讲解助教", this);
+    m_aiDock->setWidget(dock);
+    m_aiDock->setMinimumWidth(300);
+    m_aiDock->setAllowedAreas(Qt::RightDockWidgetArea | Qt::LeftDockWidgetArea);
+    addDockWidget(Qt::RightDockWidgetArea, m_aiDock);
+    qDebug() << "[AI] tutor plugin loaded from" << path;
 }
 
 void MainWindow::applyTheme(bool dark) {

@@ -11,6 +11,7 @@
 #include "../visual/StepAnimator.h"
 #include "OperationPanel.h"
 #include "LogViewer.h"
+#include "../ai/aiplugininterface.h"
 
 namespace dsv {
 
@@ -34,6 +35,7 @@ private:
     void applyTheme(bool dark);
     void updateStatus();
     void rebuildAndShow(const QString& actionLabel);  // undo/redo 共用的重建+展示逻辑
+    void loadAiPlugin();                              // 外挂：加载 AI 讲解插件（失败静默跳过）
 
     std::unique_ptr<IDataStructure> m_ds;
     DSKind m_kind = DSKind::SinglyLinkedList;
@@ -46,6 +48,10 @@ private:
     QLabel* m_status = nullptr;
     int m_opCount = 0;
     bool m_dark = false;
+    // 外挂 AI 插件（QPluginLoader 加载，DLL 不存在则全程为 nullptr，不影响主程序）
+    AIPluginInterface* m_aiPlugin = nullptr;
+    QPluginLoader* m_aiLoader = nullptr;   // 必须保持存活，否则插件被卸载导致 Dock 悬空崩溃
+    QDockWidget* m_aiDock = nullptr;
     std::vector<std::string> m_values;                 // 当前有序值集合（插入顺序，撤销依据）
     std::vector<std::vector<std::string>> m_history;   // 撤销栈
     std::vector<std::vector<std::string>> m_redo;      // 重做栈（undo 时压入，新操作时清空）
