@@ -1,17 +1,14 @@
-"""零依赖服务入口（stdlib http.server，无需 pip install 即可运行）。
+"""零依赖服务入口（stdlib http.server）。
 
     python server.py
-    curl -X POST http://localhost:8000/ask \
-      -H 'Content-Type: application/json' \
-      -d '{"question":"为什么 AVL 插入 20 后要右旋","context":{}}'
 
 依赖：仅 Python 标准库。retriever=naive、llm=offline 时完全离线可用。
 """
 import json
 import os
 import sys
+import traceback
 from http.server import BaseHTTPRequestHandler, HTTPServer
-from urllib.parse import urlparse
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from chunks import load_chunks
@@ -22,17 +19,17 @@ from config import (
     DATA_DIR, INDEX_PATH, EMBEDDING_MODEL, PORT,
 )
 
-print("building retriever ...")
+print("building retriever ...", flush=True)
 _chunks = load_chunks(DATA_DIR)
 _retriever = build_retriever(RETRIEVER, EMBEDDING_MODEL)
 if isinstance(_retriever, NaiveRetriever) and os.path.exists(INDEX_PATH):
     _retriever.load(INDEX_PATH)
-    print(f"loaded naive index ({len(_retriever.docs)} docs)")
+    print(f"loaded naive index ({len(_retriever.docs)} docs)", flush=True)
 else:
     _retriever.add(_chunks)
     if isinstance(_retriever, NaiveRetriever):
         _retriever.save(INDEX_PATH)
-print(f"retriever={RETRIEVER} llm={LLM_PROVIDER}")
+print(f"retriever={RETRIEVER} llm={LLM_PROVIDER}", flush=True)
 
 
 def answer(question, context):
@@ -55,36 +52,61 @@ class _Handler(BaseHTTPRequestHandler):
         self.end_headers()
 
     def do_POST(self):
+        print("[DEBUG] do_POST entered", file=sys.stderr, flush=True)
         try:
-            if self.path.rstrip("/") != "/ask":
+            path = self.path
+            print(f"[DEBUG] path={path!r}", file=sys.stderr, flush=True)
+
+            if path.rstrip("/") != "/ask":
                 self.send_response(404)
                 self.end_headers()
                 return
-            n = int(self.headers.get("Content-Length", 0))
-            body = json.loads(self.rfile.read(n) or b"{}")
-            res = answer(body.get("question", ""), body.get("context", {}))
+
+            n_str = self.headers.get("Content-Length", "0")
+            print(f"[DEBUG] Content-Length header={n_str!r}", file=sys.stderr, flush=True)
+            n = int(n_str)
+
+            raw = self.rfile.read(n)
+            print(f"[DEBUG] read {len(raw)} bytes, hex={raw[:80].hex()!r}", file=sys.stderr, flush=True)
+
+            body = json.loads(raw if raw else b"{}")
+            question = body.get("question", "")
+            context = body.get("context", {})
+            print(f"[DEBUG] question={question!r}", file=sys.stderr, flush=True)
+
+            res = answer(question, context)
             data = json.dumps(res, ensure_ascii=False).encode("utf-8")
+            print(f"[DEBUG] answer len={len(data)} highlight={res['highlight_nodes']}", file=sys.stderr, flush=True)
+
             self.send_response(200)
             self._cors()
             self.send_header("Content-Type", "application/json; charset=utf-8")
             self.send_header("Content-Length", str(len(data)))
             self.end_headers()
             self.wfile.write(data)
+            print("[DEBUG] response sent OK", file=sys.stderr, flush=True)
+
         except Exception as e:
-            import traceback
             tb = traceback.format_exc()
-            err = json.dumps({"error": str(e), "traceback": tb}, ensure_ascii=False).encode("utf-8")
-            self.send_response(500)
-            self._cors()
-            self.send_header("Content-Type", "application/json; charset=utf-8")
-            self.send_header("Content-Length", str(len(err)))
-            self.end_headers()
-            self.wfile.write(err)
+            print(f"[ERROR] {e}\n{tb}", file=sys.stderr, flush=True)
+            # Ultra-safe: pure ASCII error response
+            err_body = ("{\"error\": \"" + str(e).replace("\"", "'") +
+                        "\", \"detail\": \"check server stderr for traceback\"}").encode("ascii", errors="replace")
+            try:
+                self.send_response(500)
+                self._cors()
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(err_body)))
+                self.end_headers()
+                self.wfile.write(err_body)
+            except Exception:
+                pass  # if even this fails, nothing we can do
 
     def log_message(self, *a):
-        pass
+        # Print requests to stderr so we see them
+        print(f"[REQ] {a}", file=sys.stderr, flush=True)
 
 
 if __name__ == "__main__":
-    print(f"serving on http://localhost:{PORT}/ask  (Ctrl+C to stop)")
+    print(f"serving on http://localhost:{PORT}/ask  (Ctrl+C to stop)", flush=True)
     HTTPServer(("0.0.0.0", PORT), _Handler).serve_forever()
