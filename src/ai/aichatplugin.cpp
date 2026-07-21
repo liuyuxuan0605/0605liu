@@ -12,8 +12,15 @@
 #include <QJsonArray>
 #include <QColor>
 #include <QStringList>
+#include <QByteArray>
 
-AIChatPlugin::AIChatPlugin(QObject* parent) : QObject(parent) {}
+AIChatPlugin::AIChatPlugin(QObject* parent) : QObject(parent) {
+    // 允许通过环境变量覆盖 RAG 服务地址（默认 http://localhost:8000/ask）
+    QByteArray env = qgetenv("RAG_ENDPOINT");
+    if (!env.isEmpty()) {
+        m_endpoint = QString::fromUtf8(env);
+    }
+}
 
 QWidget* AIChatPlugin::createDock(dsv::StepAnimator* animator, dsv::DSScene* scene) {
     m_animator = animator;
@@ -79,7 +86,9 @@ void AIChatPlugin::postAsk(const QString& question, const QJsonObject& ctx) {
 void AIChatPlugin::onReply(QNetworkReply* reply) {
     reply->deleteLater();
     if (reply->error() != QNetworkReply::NoError) {
-        m_log->append("[错误] 无法连接 RAG 服务: " + reply->errorString());
+        m_log->append("[错误] 无法连接 RAG 服务 (" + m_endpoint + ")。\n"
+                      "请先在本机启动 rag-service/server.py 并保持窗口运行，再回来提问。\n"
+                      "（若服务在别的机器/端口，设置环境变量 RAG_ENDPOINT 指向它。）");
         return;
     }
     QJsonObject obj = QJsonDocument::fromJson(reply->readAll()).object();
