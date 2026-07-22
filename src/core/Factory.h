@@ -44,14 +44,15 @@ inline std::unique_ptr<IDataStructure> createDataStructure(DSKind kind) {
 }
 
 // Overload with configurable degree for B-tree / B+tree.
-// For BTree:   degree = min degree t (max keys = 2t-1, max children = 2t)
-// For BPlusTree: degree = max keys per node (max degree = degree+1)
+// UI "Max Degree (阶)" means maximum keys per node (user-facing semantics).
+// For BTree:   convert to min-degree t so that 2t-1 ≈ degree  → t = (degree+1)/2
+// For BPlusTree: degree IS maxK (max keys per node, directly)
 // Other structures ignore this parameter.
 inline std::unique_ptr<IDataStructure> createDataStructure(DSKind kind, int degree) {
     switch (kind) {
-        case DSKind::BTree:     return std::make_unique<BTree>(degree);       // t = degree
-        case DSKind::BPlusTree: return std::make_unique<BPlusTree>(degree);    // maxK = degree
-        default:                return createDataStructure(kind);               // fallback
+        case DSKind::BTree:     return std::make_unique<BTree>((degree + 1) / 2);  // t ≈ degree/2
+        case DSKind::BPlusTree: return std::make_unique<BPlusTree>(degree);          // maxK = degree
+        default:                return createDataStructure(kind);                     // fallback
     }
 }
 

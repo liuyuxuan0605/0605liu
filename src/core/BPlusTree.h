@@ -31,7 +31,8 @@ public:
     DSKind kind() const override { return DSKind::BPlusTree; }
     std::string name() const override { return "B+树 B+Tree"; }
     std::string description() const override {
-        return "叶节点存全部数据、内部节点只做路由；叶间以链表相连。插入溢出分裂、删除下溢借位/合并。";
+        return "阶数 m=" + std::to_string(maxK_) + "（每节点最多" + std::to_string(maxK_) +
+               "键，最少" + std::to_string(minK_) + "键）；叶存数据、内部仅路由。插入溢出分裂、删除下溢借位/合并。";
     }
 
     int size() const override {

@@ -31,7 +31,10 @@ public:
     DSKind kind() const override { return DSKind::BTree; }
     std::string name() const override { return "B树 B-Tree"; }
     std::string description() const override {
-        return "多路平衡搜索树：节点可存多个键，插入溢出则分裂、删除下溢则借位/合并。";
+        int maxKeys = 2 * t_ - 1;
+        int maxChildren = 2 * t_;
+        return "最小度 t=" + std::to_string(t_) + "（每节点最多" + std::to_string(maxKeys) +
+               "键/" + std::to_string(maxChildren) + "子）；插入溢出分裂、删除下溢借位/合并。";
     }
 
     int size() const override { return countKeys(); }
