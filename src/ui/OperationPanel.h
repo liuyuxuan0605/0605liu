@@ -32,6 +32,9 @@ signals:
 public slots:
     void setKindIndex(int kind);   // 以 DSKind 值为参数，保持下拉与结构同步
 
+public:
+    int currentDegree() const;     // 当前选中的 Max Degree（未选中时返回 DEGREE_MIN）
+
 private slots:
     void onKindChanged(int row);
     void onInsert() { emit operationRequested("insert", m_value->text()); }

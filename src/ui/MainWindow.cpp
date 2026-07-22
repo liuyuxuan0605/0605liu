@@ -91,7 +91,12 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
 
 void MainWindow::switchKind(int index) {
     m_kind = static_cast<DSKind>(index);
-    m_ds = createDataStructure(m_kind);
+    // B/B+ 树：用当前单选框的阶数创建，使初始树与界面显示一致
+    if (m_kind == DSKind::BTree || m_kind == DSKind::BPlusTree) {
+        m_ds = createDataStructure(m_kind, m_ops->currentDegree());
+    } else {
+        m_ds = createDataStructure(m_kind);
+    }
     m_history.clear();
     m_values.clear();
     m_redo.clear();
@@ -101,7 +106,7 @@ void MainWindow::switchKind(int index) {
     m_animator->stop();
     m_animator->setFrames({});
     m_scene->clearAll();
-    m_view->resetTransform();
+    m_view->resetView();
     m_ops->setKindIndex(index);
     m_header->setText(QString::fromStdString(m_ds->name()) + "  —  " +
                       QString::fromStdString(m_ds->description()));
@@ -351,7 +356,7 @@ void MainWindow::onDegreeChanged(int maxDegree) {
     m_animator->stop();
     m_animator->setFrames({});
     m_scene->clearAll();
-    m_view->resetTransform();
+    m_view->resetView();
 
     // 用新 degree 创建新数据结构
     m_ds = createDataStructure(m_kind, maxDegree);

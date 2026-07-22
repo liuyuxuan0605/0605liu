@@ -41,17 +41,23 @@ void DSSceneView::wheelEvent(QWheelEvent* event) {
 }
 
 void DSSceneView::mousePressEvent(QMouseEvent* e) {
-    if (e->button() == Qt::MiddleButton) {
+    // Pan when:
+    //  - middle button (classic), or
+    //  - LEFT button on EMPTY canvas (most intuitive, like whiteboard tools)
+    bool wantPan = (e->button() == Qt::MiddleButton) ||
+                   (e->button() == Qt::LeftButton && itemAt(e->pos()) == nullptr);
+    if (wantPan) {
+        m_panning = true;
         m_panStart = e->pos();
         setCursor(Qt::ClosedHandCursor);
         e->accept();
     } else {
-        QGraphicsView::mousePressEvent(e);  // left-click for node interaction
+        QGraphicsView::mousePressEvent(e);  // left-click on a node → node interaction
     }
 }
 
 void DSSceneView::mouseMoveEvent(QMouseEvent* e) {
-    if ((e->buttons() & Qt::MiddleButton) && !m_panStart.isNull()) {
+    if (m_panning) {
         QPoint delta = e->pos() - m_panStart;
         horizontalScrollBar()->setValue(horizontalScrollBar()->value() - delta.x());
         verticalScrollBar()->setValue(verticalScrollBar()->value() - delta.y());
@@ -63,13 +69,19 @@ void DSSceneView::mouseMoveEvent(QMouseEvent* e) {
 }
 
 void DSSceneView::mouseReleaseEvent(QMouseEvent* e) {
-    if (e->button() == Qt::MiddleButton) {
+    if (m_panning) {
+        m_panning = false;
         setCursor(Qt::ArrowCursor);
         m_panStart = QPoint();
         e->accept();
     } else {
         QGraphicsView::mouseReleaseEvent(e);
     }
+}
+
+void DSSceneView::resetView() {
+    resetTransform();       // reset visual transform to identity
+    m_zoomFactor = 1.0;    // keep zoom factor in sync (fixes Ctrl+wheel jump after switch)
 }
 
 } // namespace dsv

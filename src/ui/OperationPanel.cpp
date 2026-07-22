@@ -203,7 +203,6 @@ void OperationPanel::buildKindCombo() {
 }
 
 void OperationPanel::setKindIndex(int kind) {
-    // 用 QSignalBlocker 防止 setCurrentIndex 触发 currentIndexChanged →
     // 避免 switchKind 被重复调用（原本会发生一次额外初始化）。
     QSignalBlocker blocker(m_kind);
     for (int r = 0; r < m_kind->count(); ++r) {
@@ -213,6 +212,12 @@ void OperationPanel::setKindIndex(int kind) {
         }
     }
     relabel(static_cast<DSKind>(kind));
+}
+
+int OperationPanel::currentDegree() const {
+    QAbstractButton* b = m_degreeBtnGroup->checkedButton();
+    if (!b) return DEGREE_MIN;
+    return m_degreeBtnGroup->id(b);  // 按钮 id 在创建时设为阶数值
 }
 
 void OperationPanel::onKindChanged(int row) {
