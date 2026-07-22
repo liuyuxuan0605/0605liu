@@ -228,92 +228,59 @@ private:
         return right;
     }
 
-    // ---- delete ----
+    // ---- delete (USF default: predecessor replacement for internal keys) ----
     // Returns the overflowed right-sibling (with `median` promoted) if `node`
-    // exceeds maxK_ after deletion; otherwise nullptr.
+    // exceeds maxK_ after deletion+repair; otherwise nullptr.
     std::unique_ptr<Node> deleteNode(Node* node, const std::string& k,
                                      FrameList& frames, std::string& median) {
         int i = 0;
         while (i < (int)node->keys.size() && compareValues(k, node->keys[i]) > 0) i++;
+
         if (i < (int)node->keys.size() && node->keys[i] == k) {
             if (node->leaf) {
                 node->keys.erase(node->keys.begin() + i);
                 frames.push_back(snapshot(StepType::RemoveValue, "在叶子节点删除 " + k,
                     {node->id}, "#FF9800"));
             } else {
-                if ((int)node->children[i]->keys.size() > minK_) {
-                    std::string pred = maxKey(node->children[i].get());
-                    node->keys[i] = pred;
-                    frames.push_back(snapshot(StepType::Swap, "用前驱 " + pred + " 替换",
-                        {node->id}, "#FF9800"));
-                    std::string dummy;
-                    deleteNode(node->children[i].get(), pred, frames, dummy);
-                } else if ((int)node->children[i + 1]->keys.size() > minK_) {
-                    std::string succ = minKey(node->children[i + 1].get());
-                    node->keys[i] = succ;
-                    frames.push_back(snapshot(StepType::Swap, "用后继 " + succ + " 替换",
-                        {node->id}, "#FF9800"));
-                    std::string dummy;
-                    deleteNode(node->children[i + 1].get(), succ, frames, dummy);
-                } else {
-                    merge(node, i);
-                    frames.push_back(snapshot(StepType::Merge, "合并子节点",
+                // USF default: always replace internal key with predecessor
+                std::string pred = maxKey(node->children[i].get());
+                node->keys[i] = pred;
+                frames.push_back(snapshot(StepType::Swap, "用前驱 " + pred + " 替换内部键",
+                    {node->id}, "#FF9800"));
+                std::string childMedian;
+                auto right = deleteNode(node->children[i].get(), pred, frames, childMedian);
+                if (right) {
+                    node->keys.insert(node->keys.begin() + i, childMedian);
+                    node->children.insert(node->children.begin() + i + 1, std::move(right));
+                    frames.push_back(snapshot(StepType::Split, "下溢合并引发分裂，上移 " + childMedian,
                         {node->id}, "#FF5722"));
-                    auto right = deleteNode(node->children[i].get(), k, frames, median);
-                    if (right) {
-                        node->keys.insert(node->keys.begin() + i, median);
-                        node->children.insert(node->children.begin() + i + 1, std::move(right));
-                    }
                 }
             }
         } else {
-            if (node->leaf) {
-                return nullptr;
-            }
+            if (node->leaf) return nullptr;  // not present
             frames.push_back(snapshot(StepType::Traverse, "下降到子节点查找 " + k,
                 {node->id}, "#FFC107"));
-            if ((int)node->children[i]->keys.size() <= minK_) {
-                if (i > 0 && (int)node->children[i - 1]->keys.size() > minK_) {
-                    borrowFromPrev(node, i);
-                    frames.push_back(snapshot(StepType::Rebalance, "向左兄弟借一个键",
-                        {node->id}, "#FF5722"));
-                } else if (i < (int)node->children.size() - 1 &&
-                           (int)node->children[i + 1]->keys.size() > minK_) {
-                    borrowFromNext(node, i);
-                    frames.push_back(snapshot(StepType::Rebalance, "向右兄弟借一个键",
-                        {node->id}, "#FF5722"));
-                } else {
-                    if (i < (int)node->children.size() - 1) {
-                        merge(node, i);
-                    } else {
-                        merge(node, i - 1);
-                        i--;
-                    }
-                    frames.push_back(snapshot(StepType::Merge, "合并子节点",
-                        {node->id}, "#FF5722"));
-                    auto right = deleteNode(node->children[i].get(), k, frames, median);
-                    if (right) {
-                        node->keys.insert(node->keys.begin() + i, median);
-                        node->children.insert(node->children.begin() + i + 1, std::move(right));
-                    }
-                    return maybeSplit(node, median, frames);
-                }
-            }
-            // borrow cases (and the len > minK case) fall through to recurse
-            auto right = deleteNode(node->children[i].get(), k, frames, median);
+            std::string childMedian;
+            auto right = deleteNode(node->children[i].get(), k, frames, childMedian);
             if (right) {
-                node->keys.insert(node->keys.begin() + i, median);
+                node->keys.insert(node->keys.begin() + i, childMedian);
                 node->children.insert(node->children.begin() + i + 1, std::move(right));
+                frames.push_back(snapshot(StepType::Split, "下溢合并引发分裂，上移 " + childMedian,
+                    {node->id}, "#FF5722"));
             }
         }
-        return maybeSplit(node, median, frames);
-    }
 
-    std::unique_ptr<Node> maybeSplit(Node* node, std::string& median, FrameList& frames) {
+        // Repair child i if it underflowed (borrow / merge, cascade split for even order)
+        if (!node->leaf)
+            repairChild(node, i, frames);
+
         if ((int)node->keys.size() > maxK_)
             return splitNode(node, median, frames);
         return nullptr;
     }
+
+    // (maybeSplit removed: root overflow after merge is handled by the trailing
+    //  splitNode call in deleteNode + repairChild's cascade split below)
 
     std::string maxKey(Node* node) {
         while (!node->leaf) node = node->children.back().get();
@@ -349,15 +316,70 @@ private:
         }
     }
 
-    void merge(Node* parent, int i) {
+    // Repair child i of `parent` when it has < minK_ keys after deletion.
+    // Borrow from sibling if possible; otherwise merge (+ cascade split for even order).
+    void repairChild(Node* parent, int i, FrameList& frames) {
         Node* child = parent->children[i].get();
-        std::unique_ptr<Node> sibling = std::move(parent->children[i + 1]);
-        child->keys.push_back(parent->keys[i]);
-        for (auto& key : sibling->keys) child->keys.push_back(std::move(key));
-        if (!child->leaf)
-            for (auto& c : sibling->children) child->children.push_back(std::move(c));
-        parent->keys.erase(parent->keys.begin() + i);
-        parent->children.erase(parent->children.begin() + i + 1);
+        if ((int)child->keys.size() >= minK_) return;
+        if (child == root_.get()) return;  // root may underflow
+
+        bool hasLeft = i > 0;
+        bool hasRight = i + 1 < (int)parent->children.size();
+
+        // borrow from left sibling
+        if (hasLeft && (int)parent->children[i - 1]->keys.size() > minK_) {
+            borrowFromPrev(parent, i);
+            frames.push_back(snapshot(StepType::Rebalance, "向左兄弟借一个键",
+                {parent->id}, "#FF5722"));
+            return;
+        }
+        // borrow from right sibling
+        if (hasRight && (int)parent->children[i + 1]->keys.size() > minK_) {
+            borrowFromNext(parent, i);
+            frames.push_back(snapshot(StepType::Rebalance, "向右兄弟借一个键",
+                {parent->id}, "#FF5722"));
+            return;
+        }
+        // merge (even order may overflow -> cascade split)
+        if (hasLeft) {
+            Node* left = parent->children[i - 1].get();
+            std::string sep = parent->keys[i - 1];
+            left->keys.push_back(sep);
+            for (auto& key : child->keys) left->keys.push_back(std::move(key));
+            if (!left->leaf)
+                for (auto& c : child->children) left->children.push_back(std::move(c));
+            parent->keys.erase(parent->keys.begin() + i - 1);
+            parent->children.erase(parent->children.begin() + i);
+            frames.push_back(snapshot(StepType::Merge, "合并左兄弟与当前节点",
+                {parent->id}, "#FF5722"));
+            if ((int)left->keys.size() > maxK_) {
+                std::string lmed;
+                auto lright = splitNode(left, lmed, frames);
+                parent->keys.insert(parent->keys.begin() + i - 1, lmed);
+                parent->children.insert(parent->children.begin() + i, std::move(lright));
+                frames.push_back(snapshot(StepType::Split, "合并后级联分裂",
+                    {parent->id}, "#FF5722"));
+            }
+        } else {
+            std::string sep = parent->keys[i];
+            Node* rightSib = parent->children[i + 1].get();
+            child->keys.push_back(sep);
+            for (auto& key : rightSib->keys) child->keys.push_back(std::move(key));
+            if (!child->leaf)
+                for (auto& c : rightSib->children) child->children.push_back(std::move(c));
+            parent->keys.erase(parent->keys.begin() + i);
+            parent->children.erase(parent->children.begin() + i + 1);
+            frames.push_back(snapshot(StepType::Merge, "合并右兄弟到当前节点",
+                {parent->id}, "#FF5722"));
+            if ((int)child->keys.size() > maxK_) {
+                std::string cmed;
+                auto cright = splitNode(child, cmed, frames);
+                parent->keys.insert(parent->keys.begin() + i, cmed);
+                parent->children.insert(parent->children.begin() + i + 1, std::move(cright));
+                frames.push_back(snapshot(StepType::Split, "合并后级联分裂",
+                    {parent->id}, "#FF5722"));
+            }
+        }
     }
 
     // ---- frame support ----
