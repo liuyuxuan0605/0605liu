@@ -25,7 +25,7 @@ def _index_is_stale():
     if not os.path.exists(INDEX_PATH):
         return True
     pk_mtime = os.path.getmtime(INDEX_PATH)
-    for sub in ("interview", "notes", "generated", "open"):
+    for sub in ("interview", "notes", "generated", "open", "knowledge"):
         d = os.path.join(DATA_DIR, sub)
         if not os.path.isdir(d):
             continue
@@ -51,15 +51,14 @@ try:
             _retriever.save(INDEX_PATH)
             print(f"rebuilt naive index ({len(_retriever.docs)} docs)", flush=True)
     else:
-        # 语义检索：__init__ 已尝试加载本地向量缓存；count()==0 说明需首次/重建嵌入
-        if _retriever.count() == 0:
-            _retriever.add(_chunks)
-            print(f"built semantic index via {EMBEDDING_MODEL} ({_retriever.count()} docs)", flush=True)
-        else:
-            print(f"reused semantic cache ({_retriever.count()} docs, persistent)", flush=True)
+        # 语义/向量检索：把「是否重建」的判断完全交给 retriever.add()。
+        # ⚠️ 不能用 count()>0 直接复用——ChromaRetriever 的过期检测（拿 collection
+        # 里存的 data_mtime 和当前语料 mtime 比较）写在 add() 内部，若不调用 add()，
+        # 新增/修改的语料（如 theory 知识文档）永远不会触发重建，表现就是「还是 538 条」。
+        _retriever.add(_chunks)
 except Exception as e:  # noqa: BLE001
-    # 语义检索失败（如 key 无效 / 网络不可达），降级为关键词检索，保证服务可用
-    print(f"[WARN] 语义检索构建失败（{e}），降级为 naive 关键词检索", flush=True)
+    # 语义/向量检索失败（如 key 无效 / 网络不可达 / 嵌入函数不兼容），降级为关键词检索，保证服务可用
+    print(f"[WARN] {RETRIEVER} 检索构建失败（{e}），降级为 naive 关键词检索", flush=True)
     _retriever = NaiveRetriever()
     if os.path.exists(INDEX_PATH) and not _index_is_stale():
         _retriever.load(INDEX_PATH)
@@ -69,8 +68,8 @@ except Exception as e:  # noqa: BLE001
 print(f"retriever={RETRIEVER} llm={LLM_PROVIDER} embedding={EMBEDDING_MODEL}", flush=True)
 if LLM_PROVIDER != "offline" and not OPENAI_API_KEY:
     print("[WARN] LLM_PROVIDER 设为 openai 但 OPENAI_API_KEY 为空，将降级为离线拼接！请检查 .env 的 OPENAI_API_KEY", flush=True)
-if RETRIEVER == "semantic" and not OPENAI_API_KEY:
-    print("[WARN] RETRIEVER=semantic 但 OPENAI_API_KEY 为空，语义检索将降级为 naive 关键词！", flush=True)
+if RETRIEVER in ("semantic", "chroma") and not OPENAI_API_KEY:
+    print(f"[WARN] RETRIEVER={RETRIEVER} 但 OPENAI_API_KEY 为空，将降级为 naive 关键词检索！", flush=True)
 
 
 def answer(question, context):

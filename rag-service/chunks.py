@@ -35,7 +35,7 @@ def _terms(s):
     return terms
 
 
-SUBDIRS = ("interview", "notes", "generated", "open")
+SUBDIRS = ("interview", "notes", "generated", "open", "knowledge")
 
 
 def load_chunks(data_dir):
@@ -71,6 +71,7 @@ def load_chunks(data_dir):
                 "metadata": {
                     "source": os.path.relpath(fp, data_dir),
                     "structure": structure,
+                    "kind": meta.get("kind", ""),
                     "operation": meta.get("operation", ""),
                     "phase": meta.get("phase", ""),
                     "difficulty": meta.get("difficulty", ""),

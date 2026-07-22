@@ -277,7 +277,7 @@ class SemanticRetriever(BaseRetriever):
         cache_mtime = os.path.getmtime(self._cache_path)
         if not self._data_dir:
             return False
-        for sub in ("interview", "notes", "generated", "open"):
+        for sub in ("interview", "notes", "generated", "open", "knowledge"):
             d = os.path.join(self._data_dir, sub)
             if not os.path.isdir(d):
                 continue
@@ -323,6 +323,10 @@ class SemanticRetriever(BaseRetriever):
         return max(1, best)
 
     def add(self, chunks):
+        # 若 __init__ 已加载未过期的 pickle 缓存，直接复用，避免每次启动重复调 API 嵌入
+        if self._docs and not self._cache_is_stale():
+            print(f"reused semantic cache ({len(self._docs)} docs)", flush=True)
+            return
         self._docs = [(c["text"], c["metadata"]) for c in chunks]
         self._structs = [c["metadata"].get("structure", "") for c in chunks]
         texts = [d[0] for d in self._docs]
@@ -343,6 +347,7 @@ class SemanticRetriever(BaseRetriever):
         print(f"校准批大小={self._batch}（DashScope 单次请求上限）", flush=True)
         self._vecs = self._embed(texts)
         self._save()
+        print(f"built semantic index via {self._model} ({len(self._docs)} docs)", flush=True)
 
     def _save(self):
         with open(self._cache_path, "wb") as f:
@@ -394,13 +399,204 @@ class SemanticRetriever(BaseRetriever):
         return hits
 
 
-def build_retriever(kind, embedding_model=None, api_key="", base_url="", data_dir=None):
-    """kind: naive(零依赖) | chroma/semantic(语义向量检索)。
+class ChromaRetriever(BaseRetriever):
+    """真·向量数据库检索：ChromaDB 持久化 (HNSW) + DashScope 嵌入。
 
-    语义模式需要 api_key（调 DashScope embeddings）。若未提供 key，
+    与 SemanticRetriever（pickle + 内存余弦）的区别：
+    - 向量交给 ChromaDB 管理，落盘到 chroma_db/ 目录，重启即加载，
+      无需手动维护 semantic_index.pkl 缓存文件；
+    - 检索由 Chroma 的 collection.query 完成，并支持原生 metadata 过滤
+      （structure），比手写循环更省心；
+    - 嵌入仍走 DashScope text-embedding-v3（本机无需 torch/sentence-transformers）。
+    """
+
+    def __init__(self, api_key, base_url, embedding_model="text-embedding-v3",
+                 data_dir=None, persist_dir=None):
+        import requests
+        self._api_key = api_key
+        self._base_url = base_url.rstrip("/")
+        self._model = embedding_model
+        self._requests = requests
+        self._data_dir = data_dir
+        self._persist = persist_dir or os.path.join(
+            os.path.dirname(os.path.abspath(__file__)), "chroma_db")
+        self._batch = 8
+        self._dim = None
+        self._coll = None
+        self._connect()
+
+    def _connect(self):
+        import chromadb
+        self._client = chromadb.PersistentClient(path=self._persist)
+        self._coll = self._client.get_or_create_collection(
+            name="dsvis_chunks",
+            metadata={"hnsw:space": "cosine"},
+        )
+
+    # ---------- DashScope 嵌入（批处理 + 兜底） ----------
+    def _embed_one(self, texts):
+        payload = {"model": self._model, "input": texts}
+        headers = {
+            "Authorization": f"Bearer {self._api_key}",
+            "Content-Type": "application/json",
+        }
+        resp = self._requests.post(
+            self._base_url + "/embeddings", json=payload, headers=headers, timeout=30
+        )
+        resp.raise_for_status()
+        data = resp.json()
+        order = sorted(data.get("data", []), key=lambda d: d["index"])
+        vecs = [d["embedding"] for d in order]
+        if self._dim is None and vecs:
+            self._dim = len(vecs[0])
+        return vecs
+
+    def _embed_batch_fb(self, batch):
+        try:
+            return self._embed_one(batch)
+        except Exception:  # noqa: BLE001
+            if len(batch) <= 1:
+                try:
+                    return self._embed_one([batch[0][:1500]])
+                except Exception as e:  # noqa: BLE001
+                    print(f"  ! chroma 单条嵌入失败，补零向量: {e}", flush=True)
+                    return [[0.0] * self._dim] if self._dim else []
+            mid = len(batch) // 2
+            return self._embed_batch_fb(batch[:mid]) + self._embed_batch_fb(batch[mid:])
+
+    def _embed_texts(self, texts):
+        if not texts:
+            return []
+        out = []
+        total = (len(texts) + self._batch - 1) // self._batch
+        for bi, i in enumerate(range(0, len(texts), self._batch)):
+            batch = texts[i:i + self._batch]
+            print(f"[chroma embed {bi + 1}/{total}] {len(batch)} 条", flush=True)
+            out.extend(self._embed_batch_fb(batch))
+        return out
+
+    def _calibrate(self, texts):
+        sample = sorted(texts, key=len, reverse=True)[: max(1, min(self._batch, len(texts)))]
+        lo, hi = 1, len(sample)
+        best = 1
+        while lo <= hi:
+            mid = (lo + hi) // 2
+            try:
+                v = self._embed_one(sample[:mid])
+                self._dim = len(v[0])
+                best = mid
+                lo = mid + 1
+            except Exception:  # noqa: BLE001
+                hi = mid - 1
+        self._batch = max(1, best)
+
+    def _data_mtime(self):
+        mt = 0.0
+        if not self._data_dir:
+            return mt
+        for sub in ("interview", "notes", "generated", "open", "knowledge"):
+            d = os.path.join(self._data_dir, sub)
+            if not os.path.isdir(d):
+                continue
+            for fp in glob.glob(os.path.join(d, "*.md")):
+                mt = max(mt, os.path.getmtime(fp))
+        return mt
+
+    # ---------- 索引 / 持久化 ----------
+    def add(self, chunks):
+        # 连通性探针（短超时），key 错/不可达时快速失败，交由 server.py 降级
+        try:
+            print("chroma 嵌入连通性探针(15s)...", flush=True)
+            v = self._embed_one(["连通性测试 ping"])
+            self._dim = len(v[0])
+            self._calibrate([c["text"] for c in chunks])
+        except Exception as e:  # noqa: BLE001
+            raise RuntimeError(
+                f"chroma 嵌入探针失败，请检查 OPENAI_API_KEY/OPENAI_BASE_URL/EMBEDDING_MODEL "
+                f"及 DashScope 可达性: {e}"
+            )
+        cur = self._coll.count()
+        stale = abs((self._coll.metadata or {}).get("data_mtime", 0.0) - self._data_mtime()) > 1
+        if cur > 0 and not stale:
+            print(f"reused chroma index ({cur} docs)", flush=True)
+            return
+        if cur > 0:
+            # chromadb 1.5.x 不再接受 delete(where={})（要求至少一个 operator），
+            # 改为按 id 删除已有文档后再重建。
+            try:
+                old_ids = self._coll.get(limit=cur)["ids"]
+            except Exception:  # noqa: BLE001
+                old_ids = []
+            if old_ids:
+                self._coll.delete(ids=old_ids)
+        ids = [f"c{i}" for i in range(len(chunks))]
+        docs = [c["text"] for c in chunks]
+        metas = []
+        for c in chunks:
+            # chromadb 不允许元数据值为 None，先清洗掉 None（转成空串），否则 add 会直接报错
+            m = {k: ("" if v is None else v) for k, v in c["metadata"].items()}
+            m["structure"] = m.get("structure", "") or ""
+            metas.append(m)
+        # 手动用 DashScope 算好向量再交给 chroma（不依赖 chroma 的 embedding_function 接口，
+        # 规避不同 chroma 版本对自定义 EF 的 name/调用约定差异导致的报错）
+        vecs = self._embed_texts(docs)
+        self._coll.add(ids=ids, documents=docs, embeddings=vecs, metadatas=metas)
+        self._coll.modify(metadata={"data_mtime": self._data_mtime()})
+        print(f"built chroma index via {self._model} ({self._coll.count()} docs)", flush=True)
+
+    def count(self):
+        try:
+            return self._coll.count()
+        except Exception:  # noqa: BLE001
+            return 0
+
+    # ---------- 检索 ----------
+    def query(self, text, k=5, structure=None):
+        n = max(1, min(k, self._coll.count() or 1))
+        if structure:
+            # implementation 文档按当前结构过滤；theory 文档（kind=theory）跨结构始终召回，
+            # 让"面试知识点"在任何结构下都能被引用，而不仅局限 DSVisualizer 已可视化的结构。
+            where = {"$or": [{"structure": structure}, {"kind": "theory"}]}
+        else:
+            where = None
+        qv = self._embed_texts([text])[0]   # 手动嵌入提问向量
+        res = self._coll.query(query_embeddings=[qv], n_results=n, where=where)
+        hits = self._to_hits(res)
+        # 结构过滤无结果 → 回退全库，保证总有资料可答
+        if not hits and structure:
+            res = self._coll.query(query_embeddings=[qv], n_results=n)
+            hits = self._to_hits(res)
+        return hits
+
+    @staticmethod
+    def _to_hits(res):
+        docs = (res.get("documents") or [[]])[0]
+        metas = (res.get("metadatas") or [[]])[0]
+        dists = (res.get("distances") or [[]])[0]
+        hits = []
+        for d, m, dist in zip(docs, metas, dists):
+            sim = 1.0 - (dist if dist is not None else 1.0)  # chroma 返回余弦距离
+            hits.append(Hit(d, m, float(sim), best_idf=0.0, q_match=True))
+        return hits
+
+
+def build_retriever(kind, embedding_model=None, api_key="", base_url="", data_dir=None):
+    """kind: naive(零依赖) | semantic(pickle+内存余弦) | chroma(真·向量数据库)。
+
+    语义/向量模式需要 api_key（调 DashScope embeddings）。若未提供 key，
     自动降级为 NaiveRetriever，保证服务仍可启动（只是检索退化为关键词）。
     """
-    if kind in ("chroma", "semantic"):
+    if kind == "chroma":
+        if not api_key:
+            print("[WARN] RETRIEVER=chroma 但未配置 OPENAI_API_KEY，降级为 naive 关键词检索",
+                  flush=True)
+            return NaiveRetriever()
+        return ChromaRetriever(
+            api_key=api_key, base_url=base_url,
+            embedding_model=embedding_model or "text-embedding-v3",
+            data_dir=data_dir,
+        )
+    if kind == "semantic":
         if not api_key:
             print("[WARN] RETRIEVER=semantic 但未配置 OPENAI_API_KEY，降级为 naive 关键词检索",
                   flush=True)

@@ -39,7 +39,7 @@ def _env(name, default=""):
     return v if v not in (None, "") else default
 
 
-# retriever: naive(零依赖, 开箱即跑) | semantic(语义向量检索, 需 OPENAI_API_KEY 做嵌入)
+# retriever: naive(零依赖, 开箱即跑) | semantic(pickle+内存余弦) | chroma(真·向量数据库, 需 OPENAI_API_KEY 做嵌入)
 RETRIEVER = _env("RETRIEVER", "naive")
 OPENAI_API_KEY = _env("OPENAI_API_KEY", "")
 OPENAI_BASE_URL = _env("OPENAI_BASE_URL", "https://api.openai.com/v1")
