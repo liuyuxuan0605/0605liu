@@ -22,6 +22,7 @@ namespace dsv {
 MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
     setWindowTitle("数据结构可视化演示工具  DSVisualizer");
     resize(1600, 900);
+    showMaximized();   // 默认最大化，画布占满可用空间（彻底解决"主画布太小"）
 
     // scene + view (DSSceneView adds middle-button pan + Ctrl+wheel zoom)
     m_scene = new DSScene(this);
@@ -363,30 +364,24 @@ void MainWindow::onDegreeChanged(int maxDegree) {
     if (!m_ds) return;
     if (m_kind != DSKind::BTree && m_kind != DSKind::BPlusTree) return;
 
-    // 保存当前值 → 用新 degree 重建数据结构 → 重插所有值
-    auto currentValues = m_values;   // copy
+    // 切换阶数：清空当前数据，用新 degree 重建一棵空树
     m_animator->stop();
     m_animator->setFrames({});
     m_scene->clearAll();
     m_view->resetView();
 
-    // 用新 degree 创建新数据结构
+    // 用新 degree 创建空数据结构
     m_ds = createDataStructure(m_kind, maxDegree);
     m_scene->setKind(m_kind);
 
-    // 重插所有值（如果有的话）
-    for (const auto& v : currentValues) {
-        m_ds->insert(v);
-    }
-    m_values = currentValues;
+    // 清空值集合与撤销/重做历史
+    m_values.clear();
+    m_history.clear();
+    m_redo.clear();
 
-    // 展示当前状态
+    // 展示空树
     FrameList fl = { m_ds->currentFrame() };
-    int kept = static_cast<int>(currentValues.size());
-    QString keptText = kept > 0
-        ? QString("已保留 %1 个数据，按阶数 %2 重建树形").arg(kept).arg(maxDegree)
-        : QString("Max Degree 改为 %1").arg(maxDegree);
-    m_log->setLog({ keptText,
+    m_log->setLog({ QString("Max Degree 改为 %1，已清空数据并重建空树").arg(maxDegree),
                     QString::fromStdString(m_ds->currentFrame().description) });
     m_animator->setFrames(std::move(fl));
     m_animator->toEnd();
