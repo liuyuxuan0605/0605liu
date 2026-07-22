@@ -9,11 +9,20 @@ namespace dsv {
 
 OperationPanel::OperationPanel(QWidget* parent) : QWidget(parent) {
     auto* root = new QVBoxLayout(this);
-    root->setSpacing(10);
+    root->setSpacing(6);
+    root->setContentsMargins(4, 4, 4, 4);
+
+    // 压缩按钮/输入框的通用 lambda
+    auto compress = [](QWidget* w) {
+        w->setMaximumHeight(28);
+        w->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+    };
 
     // --- data structure selector (categorized) ---
     auto* gbKind = new QGroupBox("数据结构");
     auto* v1 = new QVBoxLayout(gbKind);
+    v1->setContentsMargins(5, 5, 5, 5);
+    v1->setSpacing(4);
     m_kind = new QComboBox();
     m_kindModel = new QStandardItemModel(this);
     buildKindCombo();
@@ -25,9 +34,13 @@ OperationPanel::OperationPanel(QWidget* parent) : QWidget(parent) {
     // --- data input ---
     auto* gbData = new QGroupBox("数据输入");
     auto* v2 = new QVBoxLayout(gbData);
+    v2->setContentsMargins(5, 5, 5, 5);
+    v2->setSpacing(4);
     m_valueHint = new QLabel("输入值（数字或文本）");
+    m_valueHint->setMaximumHeight(20);
     m_value = new QLineEdit();
     m_value->setPlaceholderText("例如 42");
+    compress(m_value);
     v2->addWidget(m_valueHint);
     v2->addWidget(m_value);
     root->addWidget(gbData);
@@ -35,10 +48,13 @@ OperationPanel::OperationPanel(QWidget* parent) : QWidget(parent) {
     // --- operations ---
     m_opGroup = new QGroupBox("操作");
     auto* grid = new QVBoxLayout(m_opGroup);
+    grid->setContentsMargins(5, 5, 5, 5);
+    grid->setSpacing(4);
     m_insertBtn = new QPushButton("插入");
     m_removeBtn = new QPushButton("删除");
     m_findBtn   = new QPushButton("查找");
     m_clearBtn  = new QPushButton("清空");
+    compress(m_insertBtn); compress(m_removeBtn); compress(m_findBtn); compress(m_clearBtn);
     connect(m_insertBtn, &QPushButton::clicked, this, &OperationPanel::onInsert);
     connect(m_removeBtn, &QPushButton::clicked, this, &OperationPanel::onRemove);
     connect(m_findBtn,   &QPushButton::clicked, this, &OperationPanel::onFind);
@@ -52,10 +68,13 @@ OperationPanel::OperationPanel(QWidget* parent) : QWidget(parent) {
     // --- deque-specific operations (only visible for Deque) ---
     m_dequeGroup = new QGroupBox("双端专属");
     auto* dgrid = new QVBoxLayout(m_dequeGroup);
+    dgrid->setContentsMargins(5, 5, 5, 5);
+    dgrid->setSpacing(4);
     m_pushFrontBtn = new QPushButton("头插 pushFront");
     m_pushBackBtn  = new QPushButton("尾插 pushBack");
     m_popFrontBtn  = new QPushButton("头删 popFront");
     m_popBackBtn   = new QPushButton("尾删 popBack");
+    compress(m_pushFrontBtn); compress(m_pushBackBtn); compress(m_popFrontBtn); compress(m_popBackBtn);
     connect(m_pushFrontBtn, &QPushButton::clicked, this, &OperationPanel::onPushFront);
     connect(m_pushBackBtn,  &QPushButton::clicked, this, &OperationPanel::onPushBack);
     connect(m_popFrontBtn,  &QPushButton::clicked, this, &OperationPanel::onPopFront);
@@ -70,12 +89,15 @@ OperationPanel::OperationPanel(QWidget* parent) : QWidget(parent) {
     // --- graph-specific operations (only visible for Graph) ---
     m_graphGroup = new QGroupBox("图操作");
     auto* ggrid = new QVBoxLayout(m_graphGroup);
+    ggrid->setContentsMargins(5, 5, 5, 5);
+    ggrid->setSpacing(4);
     m_addVertexBtn = new QPushButton("加顶点 addVertex");
     m_addEdgeBtn   = new QPushButton("加边 addEdge");
     m_bfsBtn       = new QPushButton("广度优先 BFS");
     m_dfsBtn       = new QPushButton("深度优先 DFS");
     m_dijkstraBtn  = new QPushButton("最短路径 Dijkstra");
     m_graphClearBtn = new QPushButton("清空 clear");
+    compress(m_addVertexBtn); compress(m_addEdgeBtn); compress(m_bfsBtn); compress(m_dfsBtn); compress(m_dijkstraBtn); compress(m_graphClearBtn);
     connect(m_addVertexBtn, &QPushButton::clicked,
             this, [this](){ emit operationRequested("addVertex", m_value->text()); });
     connect(m_addEdgeBtn, &QPushButton::clicked,
@@ -100,8 +122,11 @@ OperationPanel::OperationPanel(QWidget* parent) : QWidget(parent) {
     // --- tree traversal operations (only visible for BST) ---
     m_treeGroup = new QGroupBox("树遍历");
     auto* tgrid = new QVBoxLayout(m_treeGroup);
+    tgrid->setContentsMargins(5, 5, 5, 5);
+    tgrid->setSpacing(4);
     m_treeBfsBtn = new QPushButton("广度优先 BFS(层序)");
     m_treeDfsBtn = new QPushButton("深度优先 DFS(先序)");
+    compress(m_treeBfsBtn); compress(m_treeDfsBtn);
     connect(m_treeBfsBtn, &QPushButton::clicked,
             this, [this](){ emit operationRequested("bfs", m_value->text()); });
     connect(m_treeDfsBtn, &QPushButton::clicked,

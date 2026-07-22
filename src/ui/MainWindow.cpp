@@ -21,13 +21,14 @@ namespace dsv {
 
 MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
     setWindowTitle("数据结构可视化演示工具  DSVisualizer");
-    resize(1180, 720);
+    resize(1600, 900);
 
     // scene + view (DSSceneView adds middle-button pan + Ctrl+wheel zoom)
     m_scene = new DSScene(this);
     m_view = new DSSceneView(m_scene, this);
     m_view->setBackgroundBrush(QColor("#F7F8FA"));
-    m_view->setMinimumSize(400, 400);
+    m_view->setMinimumSize(640, 580);
+    m_view->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
 
     m_animator = new StepAnimator(m_scene, this);
 
@@ -46,7 +47,18 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
     cv->addWidget(m_header);
     cv->addWidget(m_view, 1);
 
+    // 压缩两侧面板，把空间让给主画布
+    m_ops->setMinimumWidth(170);
+    m_ops->setMaximumWidth(210);
+    m_ops->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Expanding);
+
+    m_log->setMinimumWidth(200);
+    m_log->setMaximumWidth(240);
+    m_log->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Expanding);
+
     auto* root = new QHBoxLayout();
+    root->setSpacing(8);
+    root->setContentsMargins(6, 6, 6, 6);
     root->addWidget(m_ops, 0);
     root->addWidget(center, 1);
     root->addWidget(m_log, 0);
@@ -370,7 +382,11 @@ void MainWindow::onDegreeChanged(int maxDegree) {
 
     // 展示当前状态
     FrameList fl = { m_ds->currentFrame() };
-    m_log->setLog({ QString("Max Degree 改为 %1，已重建数据结构").arg(maxDegree),
+    int kept = static_cast<int>(currentValues.size());
+    QString keptText = kept > 0
+        ? QString("已保留 %1 个数据，按阶数 %2 重建树形").arg(kept).arg(maxDegree)
+        : QString("Max Degree 改为 %1").arg(maxDegree);
+    m_log->setLog({ keptText,
                     QString::fromStdString(m_ds->currentFrame().description) });
     m_animator->setFrames(std::move(fl));
     m_animator->toEnd();
