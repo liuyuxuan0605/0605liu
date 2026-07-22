@@ -130,7 +130,7 @@ OperationPanel::OperationPanel(QWidget* parent) : QWidget(parent) {
 
     // --- Max Degree (only for BTree / BPlusTree) --- radio buttons like reference UI ---
     m_degreeGroup = new QGroupBox("Max. Degree (阶)");
-    auto* dgrid = new QHBoxLayout(m_degreeGroup);   // horizontal: radios in a row
+    auto* ddgrid = new QHBoxLayout(m_degreeGroup);   // horizontal: radios in a row
     m_degreeBtnGroup = new QButtonGroup(this);
     m_degreeBtnGroup->setExclusive(true);
     for (int d = DEGREE_MIN; d <= DEGREE_MAX; ++d) {
@@ -138,9 +138,9 @@ OperationPanel::OperationPanel(QWidget* parent) : QWidget(parent) {
         if (d == DEGREE_MIN) rb->setChecked(true);  // default: 3
         m_degreeBtnGroup->addButton(rb, d);         // button id = degree value
         m_degreeRadios.push_back(rb);
-        dgrid->addWidget(rb);
+        ddgrid->addWidget(rb);
     }
-    connect(m_degreeBtnGroup, QOverload<int>::of(&QButtonGroup::idClicked), this,
+    connect(m_degreeBtnGroup, QOverload<int>::of(&QButtonGroup::buttonClicked), this,
         [this](int id) { emit degreeChanged(id); });
     m_degreeGroup->setVisible(false);   // only shown for BTree/BPlusTree
     root->addWidget(m_degreeGroup);
