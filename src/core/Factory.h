@@ -51,7 +51,7 @@ inline std::unique_ptr<IDataStructure> createDataStructure(DSKind kind) {
 inline std::unique_ptr<IDataStructure> createDataStructure(DSKind kind, int degree) {
     switch (kind) {
         case DSKind::BTree:     return std::make_unique<BTree>(degree - 1);     // maxK = degree-1
-        case DSKind::BPlusTree: return std::make_unique<BPlusTree>(degree - 1); // maxK = degree-1
+        case DSKind::BPlusTree: return std::make_unique<BPlusTree>(degree);     // degree = 阶 m
         default:                return createDataStructure(kind);                // fallback
     }
 }
