@@ -536,43 +536,100 @@ void MainWindow::loadAiPlugin() {
 }
 
 void MainWindow::applyTheme(bool dark) {
-    // 两套完全显式的调色板，避免 reset 时用 QPalette() 只恢复系统默认、
-    // 导致从深色切回浅色时左/右面板和状态栏仍残留深色。
-    QPalette p;
+    // 经过实测：Qt5.12 + Windows 样式下，单纯 setPalette 无法让
+    // QGroupBox/QPushButton/QListWidget 等控件在运行时统一刷新；
+    // 直接用全局 stylesheet 切换是唯一可靠的全窗口主题切换方式。
+    static const char* LIGHT_SHEET = R"(
+        QMainWindow, QWidget, QDockWidget, QStatusBar, QMenuBar, QMenu, QGroupBox, QLabel {
+            background-color: #FFFFFF;
+            color: #1F2329;
+        }
+        QPushButton, QComboBox, QLineEdit, QListWidget, QTextEdit, QSpinBox, QSlider::groove {
+            background-color: #F7F8FA;
+            color: #1F2329;
+            border: 1px solid #DDE0E5;
+            border-radius: 4px;
+        }
+        QPushButton:hover, QComboBox:hover, QLineEdit:focus {
+            background-color: #EDF0F5;
+            border: 1px solid #BFC4CD;
+        }
+        QGroupBox {
+            border: 1px solid #DDE0E5;
+            border-radius: 6px;
+            margin-top: 8px;
+            padding-top: 8px;
+        }
+        QGroupBox::title {
+            subcontrol-origin: margin;
+            left: 8px;
+            padding: 0 4px;
+        }
+        QMenuBar::item:selected, QMenuBar::item:hover, QMenu::item:selected {
+            background-color: #E6E9EF;
+        }
+        QListWidget::item:selected, QListWidget::item:hover {
+            background-color: #4A90E2;
+            color: #FFFFFF;
+        }
+        QGraphicsView {
+            background-color: #F7F8FA;
+            border: none;
+        }
+        QStatusBar QLabel {
+            color: #1F2329;
+        }
+    )";
+
+    static const char* DARK_SHEET = R"(
+        QMainWindow, QWidget, QDockWidget, QStatusBar, QMenuBar, QMenu, QGroupBox, QLabel {
+            background-color: #20242E;
+            color: #E6E6E6;
+        }
+        QPushButton, QComboBox, QLineEdit, QListWidget, QTextEdit, QSpinBox, QSlider::groove {
+            background-color: #2A2F3A;
+            color: #E6E6E6;
+            border: 1px solid #333A47;
+            border-radius: 4px;
+        }
+        QPushButton:hover, QComboBox:hover, QLineEdit:focus {
+            background-color: #333A47;
+            border: 1px solid #4A5568;
+        }
+        QGroupBox {
+            border: 1px solid #333A47;
+            border-radius: 6px;
+            margin-top: 8px;
+            padding-top: 8px;
+        }
+        QGroupBox::title {
+            subcontrol-origin: margin;
+            left: 8px;
+            padding: 0 4px;
+        }
+        QMenuBar::item:selected, QMenuBar::item:hover, QMenu::item:selected {
+            background-color: #333A47;
+        }
+        QListWidget::item:selected, QListWidget::item:hover {
+            background-color: #4A90E2;
+            color: #FFFFFF;
+        }
+        QGraphicsView {
+            background-color: #20242E;
+            border: none;
+        }
+        QStatusBar QLabel {
+            color: #E6E6E6;
+        }
+    )";
+
     if (dark) {
-        p.setColor(QPalette::Window, QColor("#20242E"));
-        p.setColor(QPalette::WindowText, QColor("#E6E6E6"));
-        p.setColor(QPalette::Base, QColor("#2A2F3A"));
-        p.setColor(QPalette::Text, QColor("#E6E6E6"));
-        p.setColor(QPalette::Button, QColor("#333A47"));
-        p.setColor(QPalette::ButtonText, QColor("#E6E6E6"));
-        p.setColor(QPalette::ToolTipBase, QColor("#2A2F3A"));
-        p.setColor(QPalette::ToolTipText, QColor("#E6E6E6"));
-        p.setColor(QPalette::Highlight, QColor("#4A90E2"));
-        p.setColor(QPalette::HighlightedText, QColor("#FFFFFF"));
+        qApp->setStyleSheet(QString::fromUtf8(DARK_SHEET));
         m_view->setBackgroundBrush(QColor("#20242E"));
     } else {
-        p.setColor(QPalette::Window, QColor("#FFFFFF"));
-        p.setColor(QPalette::WindowText, QColor("#1F2329"));
-        p.setColor(QPalette::Base, QColor("#F7F8FA"));
-        p.setColor(QPalette::Text, QColor("#1F2329"));
-        p.setColor(QPalette::Button, QColor("#F0F1F4"));
-        p.setColor(QPalette::ButtonText, QColor("#1F2329"));
-        p.setColor(QPalette::ToolTipBase, QColor("#FFFFFF"));
-        p.setColor(QPalette::ToolTipText, QColor("#1F2329"));
-        p.setColor(QPalette::Highlight, QColor("#4A90E2"));
-        p.setColor(QPalette::HighlightedText, QColor("#FFFFFF"));
+        qApp->setStyleSheet(QString::fromUtf8(LIGHT_SHEET));
         m_view->setBackgroundBrush(QColor("#F7F8FA"));
     }
-    qApp->setPalette(p);
-    // 关键：已显示的控件不会因 setPalette 主动重绘，仍缓存旧深色像素，
-    // 表现为"主题切了但画面没变"。必须强制全部 widget 重新抛光 + 重绘。
-    for (QWidget* w : qApp->allWidgets()) {
-        w->style()->unpolish(w);
-        w->style()->polish(w);
-        w->update();
-    }
-    this->update();
 }
 
 void MainWindow::updateStatus() {

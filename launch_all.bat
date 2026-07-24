@@ -27,31 +27,19 @@ if errorlevel 1 (
 REM ---- 2. Give RAG a moment to load its semantic cache ----
 timeout /t 3 /nobreak >nul
 
-REM ---- 3. Auto-detect DSVisualizer.exe ----
+REM ---- 3. Auto-detect newest DSVisualizer.exe (recursive, by modification time) ----
+REM 用户可能在 debug/release/build-xxx 等不同目录生成 exe；直接递归取最新的，
+REM 避免 release/ 里残留旧 exe 导致每次启动都是旧版本。
 set "DS_EXE="
-if exist "%PROJECT_DIR%\release\DSVisualizer.exe" set "DS_EXE=%PROJECT_DIR%\release\DSVisualizer.exe"
-if not defined DS_EXE if exist "%PROJECT_DIR%\bin\DSVisualizer.exe" set "DS_EXE=%PROJECT_DIR%\bin\DSVisualizer.exe"
-if not defined DS_EXE if exist "%PROJECT_DIR%\debug\DSVisualizer.exe" set "DS_EXE=%PROJECT_DIR%\debug\DSVisualizer.exe"
-if not defined DS_EXE if exist "%PROJECT_DIR%\DSVisualizer.exe" set "DS_EXE=%PROJECT_DIR%\DSVisualizer.exe"
-if not defined DS_EXE (
-    echo [INFO] Not in release/bin/debug/root. Searching recursively...
-    for /r "%PROJECT_DIR%" %%f in (DSVisualizer.exe) do (
-        if not defined DS_EXE set "DS_EXE=%%f"
-    )
+for /f "delims=" %%f in ('dir /s /b /o:-d "%PROJECT_DIR%\DSVisualizer.exe" 2^>nul') do (
+    if not defined DS_EXE set "DS_EXE=%%f"
 )
 
 if not defined DS_EXE (
-    echo [ERROR] DSVisualizer.exe not found in:
-    echo   %PROJECT_DIR%\release\
-    echo   %PROJECT_DIR%\debug\
-    echo   %PROJECT_DIR%\
+    echo [ERROR] DSVisualizer.exe not found anywhere under:
+    echo   %PROJECT_DIR%
     echo.
-    echo Build it first:
-    echo   cd /d %PROJECT_DIR%
-    echo   git reset --hard origin/feature/ai-tutor
-    echo   qmake
-    echo   mingw32-make
-    echo.
+    echo Build it first (Qt Creator: Build - Rebuild All), then re-run this script.
     echo Or edit DS_EXE path at the top of this script.
     pause
     exit /b 1
