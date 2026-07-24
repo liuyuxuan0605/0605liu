@@ -100,6 +100,10 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
 
     // 外挂：尝试加载 AI 讲解插件（DLL 不存在 / 加载失败 → 静默跳过，程序照常运行）
     loadAiPlugin();
+
+    // 显式应用初始浅色主题（stylesheet 机制），避免依赖系统默认导致
+    // 启动时面板/状态栏与画布颜色不一致。
+    applyTheme(false);
 }
 
 void MainWindow::switchKind(int index) {
@@ -626,10 +630,13 @@ void MainWindow::applyTheme(bool dark) {
     if (dark) {
         qApp->setStyleSheet(QString::fromUtf8(DARK_SHEET));
         m_view->setBackgroundBrush(QColor("#20242E"));
+        setWindowTitle("数据结构可视化演示工具  DSVisualizer  [DARK]");
     } else {
         qApp->setStyleSheet(QString::fromUtf8(LIGHT_SHEET));
         m_view->setBackgroundBrush(QColor("#F7F8FA"));
+        setWindowTitle("数据结构可视化演示工具  DSVisualizer  [LIGHT]");
     }
+    qDebug() << "[theme] applyTheme(" << dark << ") stylesheet length =" << qApp->styleSheet().length();
 }
 
 void MainWindow::updateStatus() {
