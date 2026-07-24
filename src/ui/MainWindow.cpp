@@ -536,20 +536,35 @@ void MainWindow::loadAiPlugin() {
 }
 
 void MainWindow::applyTheme(bool dark) {
+    // 两套完全显式的调色板，避免 reset 时用 QPalette() 只恢复系统默认、
+    // 导致从深色切回浅色时左/右面板和状态栏仍残留深色。
+    QPalette p;
     if (dark) {
-        QPalette p = qApp->palette();
         p.setColor(QPalette::Window, QColor("#20242E"));
         p.setColor(QPalette::WindowText, QColor("#E6E6E6"));
         p.setColor(QPalette::Base, QColor("#2A2F3A"));
         p.setColor(QPalette::Text, QColor("#E6E6E6"));
         p.setColor(QPalette::Button, QColor("#333A47"));
         p.setColor(QPalette::ButtonText, QColor("#E6E6E6"));
-        qApp->setPalette(p);
+        p.setColor(QPalette::ToolTipBase, QColor("#2A2F3A"));
+        p.setColor(QPalette::ToolTipText, QColor("#E6E6E6"));
+        p.setColor(QPalette::Highlight, QColor("#4A90E2"));
+        p.setColor(QPalette::HighlightedText, QColor("#FFFFFF"));
         m_view->setBackgroundBrush(QColor("#20242E"));
     } else {
-        qApp->setPalette(QPalette());
+        p.setColor(QPalette::Window, QColor("#FFFFFF"));
+        p.setColor(QPalette::WindowText, QColor("#1F2329"));
+        p.setColor(QPalette::Base, QColor("#F7F8FA"));
+        p.setColor(QPalette::Text, QColor("#1F2329"));
+        p.setColor(QPalette::Button, QColor("#F0F1F4"));
+        p.setColor(QPalette::ButtonText, QColor("#1F2329"));
+        p.setColor(QPalette::ToolTipBase, QColor("#FFFFFF"));
+        p.setColor(QPalette::ToolTipText, QColor("#1F2329"));
+        p.setColor(QPalette::Highlight, QColor("#4A90E2"));
+        p.setColor(QPalette::HighlightedText, QColor("#FFFFFF"));
         m_view->setBackgroundBrush(QColor("#F7F8FA"));
     }
+    qApp->setPalette(p);
 }
 
 void MainWindow::updateStatus() {
