@@ -565,6 +565,14 @@ void MainWindow::applyTheme(bool dark) {
         m_view->setBackgroundBrush(QColor("#F7F8FA"));
     }
     qApp->setPalette(p);
+    // 关键：已显示的控件不会因 setPalette 主动重绘，仍缓存旧深色像素，
+    // 表现为"主题切了但画面没变"。必须强制全部 widget 重新抛光 + 重绘。
+    for (QWidget* w : qApp->allWidgets()) {
+        w->style()->unpolish(w);
+        w->style()->polish(w);
+        w->update();
+    }
+    this->update();
 }
 
 void MainWindow::updateStatus() {
