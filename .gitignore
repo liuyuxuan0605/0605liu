@@ -28,8 +28,7 @@ rag-service/.env
 rag-service/chroma_db/
 *.pkl
 
-# === 排除：RAG 知识库语料（AI 生成的讲解 .md，不对外）===
-rag-service/data/
+# === 说明：rag-service/data/ 知识库语料（含讲解 .md）已按用户要求纳入版本库，不再排除 ===
 
 # === 排除：本会话生成的调试/诊断/报告文档（非应用代码）===
 AVL_FIX_ROUND7.md

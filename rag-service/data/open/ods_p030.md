@@ -1,0 +1,19 @@
+---
+structure:
+source: open/ods_p030.md
+page: 30
+---
+
+# ODS p30: §1.3 Introduction
+
+§1.3 Introduction
+02004006008001000120014001600
+10 20 30 40 50 60 70 80 90 100f(n)
+n15n
+2nlogn
+050000100000150000200000250000300000
+0 1000 2000 3000 4000 5000 6000 7000 8000 9000 10000f(n)
+n15n
+2nlogn
+Figure 1.5: Plots of 15 nversus 2 nlogn.
+16
