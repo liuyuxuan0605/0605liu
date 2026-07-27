@@ -63,3 +63,7 @@ rag-service/server_run.log
 rag-service/skills-lock.json
 rag-service/.agents/
 rag-service/.claude/
+
+# === 排除：用户私人面试资料（不对外）===
+面试逐字稿.md
+所有权面试速记卡.md
