@@ -4,6 +4,9 @@ import glob
 import pickle
 import math
 import re
+import json
+import urllib.request
+import urllib.error
 
 
 class Hit:
@@ -16,6 +19,24 @@ class Hit:
         # 查询里那些"在语料中稀有"的词，是否真的被本篇命中。
         # 这是相关性闸门的主依据：能拦掉靠超长文档兜底万能匹配的问题。
         self.q_match = q_match
+
+
+def _dedup_by_source(hits, k):
+    """按来源(source)去重：同一文档的多个 chunk 只保留相似度最高的一条，
+    剩下的槽位让给下一个不同来源。避免「同一篇笔记霸占 top-k 全部槽位」
+    （实测出现过 notes/b_tree_operations.md 占满 top5 的 5 个槽），提升
+    召回多样性，让第 2、3 个相关文档也有机会进 top-k。"""
+    seen = set()
+    out = []
+    for h in hits:
+        src = str(h.metadata.get("source", ""))
+        if src in seen:
+            continue
+        seen.add(src)
+        out.append(h)
+        if len(out) >= k:
+            break
+    return out
 
 
 def _terms(s):
@@ -63,6 +84,53 @@ def _detect_topic(text):
     if "avl" in t:
         return "AVLTree"
     return ""
+
+
+def _translate_to_english(text, api_key, base_url, chat_model):
+    """把含中文的问题翻译成英文，用于跨语言对齐检索（中文查询 vs 英文知识库）。
+
+    背景：知识库 15/16 篇是 VisuAlgo 英文文档；产品只服务中文提问，
+    中文 query 的 embedding 与英文 doc 的 embedding 跨语言弱对齐，
+    导致部分相关英文文档排不进 top-k（chroma 评估里的 B 类 MISS）。
+    把查询翻成英文再去查英文库，英文对英文对齐最强，直接消除该鸿沟。
+
+    约定：
+    - 仅当文本含 CJK 字符才调用翻译；纯英文/无中文直接返回 None（无需翻译）。
+    - 翻译失败（网络/key/模型问题）一律回退 None，绝不阻断检索。
+    - 复用 DashScope OpenAI 兼容 /chat/completions 端点（与 llm.py 同源），
+      纯标准库 urllib，不引入新依赖。
+    """
+    if not api_key or not chat_model:
+        return None
+    if not re.search(r"[\u4e00-\u9fff]", text):
+        return None
+    try:
+        payload = {
+            "model": chat_model,
+            "messages": [
+                {"role": "system", "content":
+                 "You are a translation engine. Translate the user's text into English. "
+                 "Output ONLY the English translation, no explanations, no quotes, no markdown."},
+                {"role": "user", "content": text},
+            ],
+            "temperature": 0.0,
+        }
+        req = urllib.request.Request(
+            base_url.rstrip("/") + "/chat/completions",
+            data=json.dumps(payload).encode("utf-8"),
+            headers={"Authorization": f"Bearer {api_key}",
+                     "Content-Type": "application/json"},
+            method="POST",
+        )
+        with urllib.request.urlopen(req, timeout=20) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+        en = data["choices"][0]["message"]["content"].strip()
+        en = en.strip('"').strip("'").strip("`").strip()
+        if en and re.search(r"[A-Za-z]", en):
+            return en
+    except Exception as e:  # noqa: BLE001
+        print(f"    [translate] 中文→英文翻译失败，回退原文检索: {e}", flush=True)
+    return None
 
 
 class BaseRetriever:
@@ -117,7 +185,7 @@ class NaiveRetriever(BaseRetriever):
         q = _expand_terms(text)
         topic = _detect_topic(text)
 
-        def _score(filter_struct):
+        def _score(filter_struct, topn=k):
             scored = []
             for terms, txt, meta in self.docs:
                 sm = meta.get("structure", "")
@@ -132,14 +200,26 @@ class NaiveRetriever(BaseRetriever):
                 # 来源加权：
                 # - 面试口语笔记（interview/）含大量常见中文词，容易蹭分胜出，
                 #   进一步降权，避免它盖过更专业的文档；
-                # - 教科书《Open Data Structures》(open/ods) 是权威来源，适当加权，
-                #   让中文提问也能召回这本英文书的内容。
+                # - 教科书《Open Data Structures》(open/ods) 是英文泛参考资料。
+                #   产品只服务中文提问：英文页与中文查询存在跨语言弱对齐，且
+                #   不是任何已知中文问题的正确答案（离线评估 21 条 query，top5
+                #   含 open/ 页 = 0）。故**恒降权 ×0.3**，仅作极低优先级兜底，
+                #   绝不允许其盖过 knowledge/notes/generated 的中文文档。
+                #   注：早期曾对"无结构过滤"场景 ×1.6 加权，导致英文页在泛话题下
+                #   淹没相关文档；现改为恒定降权（仅服务中文，方向不可逆）。
                 # 注意 source 在 Windows 上是反斜杠，先统一为正斜杠再判断。
                 src_prefix = str(meta.get("source", "")).replace("\\", "/")
                 if src_prefix.startswith("interview/"):
                     score *= 0.4
                 elif src_prefix.startswith("open/ods"):
-                    score *= 1.6
+                    # 仅服务中文：英文 ODS 页恒降权，不加权。
+                    score *= 0.3
+                # 仅服务中文：无结构过滤的泛查询里，声明了具体 structure 的文档
+                # （如 UFDS / List / Array / Sorting）默认"答非所问"，轻度降权，
+                # 避免它抢在真正的通用/对比答案前面（典型：并查集笔记在"链表和数组区别"里占位）。
+                # 已指定结构时不做此降权（该文档本就是对应结构的答案）。
+                if filter_struct is None and sm:
+                    score *= 0.5
                 # 话题加权：问题明显指向某类结构（红黑树 / AVL）时，
                 # 同话题笔记再加成，避免被"旋转"这个通用词拉来别的树的笔记。
                 if topic and sm == topic:
@@ -151,12 +231,16 @@ class NaiveRetriever(BaseRetriever):
                 q_match = rare_hits >= 2
                 scored.append((score, txt, meta, best_idf, q_match))
             scored.sort(key=lambda x: -x[0])
-            return [Hit(t, m, s, b, qm) for s, t, m, b, qm in scored[:k]]
+            return [Hit(t, m, s, b, qm) for s, t, m, b, qm in scored[:topn]]
 
-        res = _score(structure)
+        # 多取候选再做来源去重，防止同一文档多个 chunk 霸占 top-k
+        # （如 ufds.md 曾占满 5 槽中的 3 个）。先取 k*3 候选，去重后取前 k。
+        cand = _score(structure, topn=max(k * 3, 20))
+        res = _dedup_by_source(cand, k)
         # 严格按结构过滤无结果时，回退到全库检索，保证总有资料可答
         if not res and structure:
-            res = _score(None)
+            cand = _score(None, topn=max(k * 3, 20))
+            res = _dedup_by_source(cand, k)
         return res
 
     def save(self, path):
@@ -195,12 +279,13 @@ class SemanticRetriever(BaseRetriever):
     """
 
     def __init__(self, api_key, base_url, embedding_model="text-embedding-v3",
-                 data_dir=None, cache_path=None, batch_size=32):
+                 data_dir=None, cache_path=None, batch_size=32, chat_model=""):
         import requests
         self._api_key = api_key
         self._base_url = base_url.rstrip("/")
         self._model = embedding_model
         self._requests = requests
+        self._chat_model = chat_model
         self._batch = batch_size
         self._data_dir = data_dir
         self._cache_path = cache_path or os.path.join(
@@ -374,28 +459,41 @@ class SemanticRetriever(BaseRetriever):
         return dot / (na ** 0.5 * nb ** 0.5)
 
     def query(self, text, k=5, structure=None):
+        # 跨语言对齐：中文查询翻成英文，英文向量对英文知识库对齐更强；
+        # 最终相似度取「中文向量」与「英文向量」两者的最大值，互不丢分。
         qv = self._embed([text])[0]
-        scored = []
+        en = _translate_to_english(text, self._api_key, self._base_url, self._chat_model)
+        qv_en = self._embed([en])[0] if en else None
+        if en:
+            print(f"    [translate] 中文查询已翻英文检索: {en!r}", flush=True)
+
+        def _sim(vec):
+            s = self._cosine(qv, vec)
+            if qv_en is not None:
+                s = max(s, self._cosine(qv_en, vec))
+            return s
+
+        candidates = []
         for i, (vec, st) in enumerate(zip(self._vecs, self._structs)):
             # 结构过滤：给定结构时跳过声明了不同结构的文档；
             # 结构为空/未声明 → 匹配任意（对齐 naive 宽松语义，ODS 通用文档可召回）
             if structure and st and st != structure:
                 continue
-            sim = self._cosine(qv, vec)
-            scored.append((sim, i))
-        scored.sort(key=lambda x: -x[0])
-        top = scored[:k]
+            sim = _sim(vec)
+            candidates.append((sim, i))
+        candidates.sort(key=lambda x: -x[0])
+        hits = [Hit(self._docs[i][0], self._docs[i][1], float(sim),
+                    best_idf=0.0, q_match=True) for sim, i in candidates]
+        hits = _dedup_by_source(hits, k)
         # 结构过滤无结果时回退全库，保证总有资料可答
-        if not top and structure:
-            scored = sorted(
-                ((self._cosine(qv, vec), i) for i, vec in enumerate(self._vecs)),
+        if not hits and structure:
+            fallback = sorted(
+                ((_sim(vec), i) for i, vec in enumerate(self._vecs)),
                 key=lambda x: -x[0],
             )
-            top = scored[:k]
-        hits = []
-        for sim, i in top:
-            text_i, meta_i = self._docs[i]
-            hits.append(Hit(text_i, meta_i, float(sim), best_idf=0.0, q_match=True))
+            fb_hits = [Hit(self._docs[i][0], self._docs[i][1], float(sim),
+                          best_idf=0.0, q_match=True) for sim, i in fallback]
+            hits = _dedup_by_source(fb_hits, k)
         return hits
 
 
@@ -411,12 +509,13 @@ class ChromaRetriever(BaseRetriever):
     """
 
     def __init__(self, api_key, base_url, embedding_model="text-embedding-v3",
-                 data_dir=None, persist_dir=None):
+                 data_dir=None, persist_dir=None, chat_model=""):
         import requests
         self._api_key = api_key
         self._base_url = base_url.rstrip("/")
         self._model = embedding_model
         self._requests = requests
+        self._chat_model = chat_model
         self._data_dir = data_dir
         self._persist = persist_dir or os.path.join(
             os.path.dirname(os.path.abspath(__file__)), "chroma_db")
@@ -552,21 +651,55 @@ class ChromaRetriever(BaseRetriever):
 
     # ---------- 检索 ----------
     def query(self, text, k=5, structure=None):
-        n = max(1, min(k, self._coll.count() or 1))
+        count = self._coll.count() or 1
+        # 多取一些再按来源去重：同一篇笔记的多个 chunk 会占满 top-k 槽位，
+        # 去重后能腾出槽位给第 2、3 个相关文档，提升召回多样性与 recall@k。
+        fetch_n = max(1, min(count, k * 3))
+        # 跨语言对齐（修复 B 类 MISS）：中文查询翻成英文，英文向量对英文知识库
+        # 对齐最强；每个检索阶段都同时用「中文向量」和「英文向量」查一次，再按
+        # 来源合并（同来源取相似度更高者），互不丢分。英文翻译失败则退化为纯中文查询。
+        qv = self._embed_texts([text])[0]   # 手动嵌入提问向量（中文）
+        en = _translate_to_english(text, self._api_key, self._base_url, self._chat_model)
+        qv_en = self._embed_texts([en])[0] if en else None
+        if en:
+            print(f"    [translate] 中文查询已翻英文检索: {en!r}", flush=True)
+
+        def _stage(where):
+            # 用中文向量查
+            res_zh = self._coll.query(query_embeddings=[qv], n_results=fetch_n, where=where)
+            hits = self._to_hits(res_zh)
+            # 用英文向量查（若有），按来源合并，取相似度更高者
+            if qv_en is not None:
+                res_en = self._coll.query(query_embeddings=[qv_en], n_results=fetch_n, where=where)
+                hits = self._merge_hits(hits, self._to_hits(res_en))
+            return hits  # 不在内层 dedup，留给外层统一合并/截断
+
         if structure:
-            # implementation 文档按当前结构过滤；theory 文档（kind=theory）跨结构始终召回，
-            # 让"面试知识点"在任何结构下都能被引用，而不仅局限 DSVisualizer 已可视化的结构。
-            where = {"$or": [{"structure": structure}, {"kind": "theory"}]}
+            # 结构优先 + 全库补充（修复 #1/#5 跨结构过滤误杀）：
+            # 仅用 structure 过滤会把跨结构相关文档整体排除——例如问
+            # "Dijkstra 的优先队列是不是最小堆"(struct=Graph) 时，正确答案在
+            # sssp.md(SSSP)/heap.md(Heap)/MinHeap.md(MinHeap)，全是 Graph 以外的
+            # 标签，被 where={"structure":"Graph"} 挡在门外；同理"图里有没有环"
+            # (struct=Graph) 的正确答案 cyclefinding.md(CycleFinding)/
+            # dfsbfs.md(GraphTraversal) 也被排除。
+            # 改为：结构过滤结果 与 全库结果 按来源合并取最高相似度，再取 top-k。
+            # 结构文档因强语义匹配仍居前，跨结构答案也能进 top-k（互不丢分）。
+            # 旧 3 阶段里的 "kind=theory 单独阶段" 已被全库检索覆盖，不再需要。
+            hits = self._merge_hits(_stage({"structure": structure}), _stage(None))
+            return _dedup_by_source(hits, k)
         else:
-            where = None
-        qv = self._embed_texts([text])[0]   # 手动嵌入提问向量
-        res = self._coll.query(query_embeddings=[qv], n_results=n, where=where)
-        hits = self._to_hits(res)
-        # 结构过滤无结果 → 回退全库，保证总有资料可答
-        if not hits and structure:
-            res = self._coll.query(query_embeddings=[qv], n_results=n)
-            hits = self._to_hits(res)
-        return hits
+            return _dedup_by_source(_stage(None), k)
+
+    @staticmethod
+    def _merge_hits(a, b):
+        """合并两次检索（中文向量 + 英文向量）的结果：按来源(source)去重，
+        同一来源取相似度更高者，最终按相似度降序。"""
+        best = {}
+        for h in a + b:
+            src = str(h.metadata.get("source", ""))
+            if src not in best or h.score > best[src].score:
+                best[src] = h
+        return sorted(best.values(), key=lambda h: -h.score)
 
     @staticmethod
     def _to_hits(res):
@@ -580,11 +713,15 @@ class ChromaRetriever(BaseRetriever):
         return hits
 
 
-def build_retriever(kind, embedding_model=None, api_key="", base_url="", data_dir=None):
+def build_retriever(kind, embedding_model=None, api_key="", base_url="", data_dir=None,
+                    chat_model=""):
     """kind: naive(零依赖) | semantic(pickle+内存余弦) | chroma(真·向量数据库)。
 
     语义/向量模式需要 api_key（调 DashScope embeddings）。若未提供 key，
     自动降级为 NaiveRetriever，保证服务仍可启动（只是检索退化为关键词）。
+
+    chat_model：用于「中文查询→英文」翻译（跨语言对齐检索）。为空则跳过翻译，
+    退化为纯中文查询（仍可用，只是英文知识库召回偏弱）。
     """
     if kind == "chroma":
         if not api_key:
@@ -594,7 +731,7 @@ def build_retriever(kind, embedding_model=None, api_key="", base_url="", data_di
         return ChromaRetriever(
             api_key=api_key, base_url=base_url,
             embedding_model=embedding_model or "text-embedding-v3",
-            data_dir=data_dir,
+            data_dir=data_dir, chat_model=chat_model,
         )
     if kind == "semantic":
         if not api_key:
@@ -605,6 +742,6 @@ def build_retriever(kind, embedding_model=None, api_key="", base_url="", data_di
             api_key=api_key,
             base_url=base_url,
             embedding_model=embedding_model or "text-embedding-v3",
-            data_dir=data_dir,
+            data_dir=data_dir, chat_model=chat_model,
         )
     return NaiveRetriever()

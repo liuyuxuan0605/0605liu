@@ -2,6 +2,7 @@
 #include "VisualNode.h"
 #include "VisualEdge.h"
 #include "LayoutEngine.h"
+#include "DSSceneView.h"
 #include <QPropertyAnimation>
 #include <QTimer>
 #include <QGraphicsView>
@@ -41,7 +42,6 @@ void DSScene::clearAll() {
     }
     m_nodes.clear();
     m_edges.clear();
-    m_lastNodeCount = -1;
 }
 
 void DSScene::stopPropertyAnimations(QObject* obj, const QByteArray& propName) {
@@ -86,7 +86,13 @@ void DSScene::fitView(const std::unordered_map<int, QPointF>& pos) {
     qreal nodeH = widerNode ? 48 : 40;
     QRectF r;
     for (const auto& kv : pos) r = r.united(QRectF(kv.second, QSizeF(nodeW, nodeH)));
-    views().first()->fitInView(r.adjusted(-60, -60, 60, 60), Qt::KeepAspectRatio);
+    // Use DSSceneView so the zoom factor stays in sync with the slider.
+    auto* view = qobject_cast<DSSceneView*>(views().first());
+    if (view) {
+        view->fitInContent(r.adjusted(-60, -60, 60, 60));
+    } else {
+        views().first()->fitInView(r.adjusted(-60, -60, 60, 60), Qt::KeepAspectRatio);
+    }
 }
 
 void DSScene::applyFrame(const Frame& frame, bool animated) {
@@ -205,11 +211,8 @@ void DSScene::applyFrame(const Frame& frame, bool animated) {
         }
     }
 
-    // fit only when the structure's size changes (avoids per-step zoom jumps)
-    if ((int)present.size() != m_lastNodeCount) {
-        fitView(pos);
-        m_lastNodeCount = static_cast<int>(present.size());
-    }
+    // 让滚动条范围跟随真实图元边界，节点超出视口时可拖动滚动条查看
+    setSceneRect(itemsBoundingRect().adjusted(-40, -40, 40, 40));
 }
 
 void DSScene::highlightByValue(const QStringList& values, const QColor& color) {

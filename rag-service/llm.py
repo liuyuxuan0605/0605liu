@@ -11,14 +11,31 @@ import urllib.request
 
 SYSTEM_PROMPT = """你是一个数据结构可视化教学助教，面向正在准备技术面试的学习者。
 回答原则：
-1. 严格依据下面提供的【检索资料】作答，不要编造资料以外的知识点或伪造成功/失败案例。
-2. 如果检索资料不足以回答，坦诚说明“资料里没讲清楚这部分”，不要硬编。
-3. 用中文，简洁、有结构（必要时用步骤/要点），面向“面试怎么答”讲清原理与触发条件。
-4. 若回答涉及图里的具体节点，在 highlight_nodes 给出这些节点的整数值。"""
+1. 优先依据【当前数据结构真实状态】作答——它是屏幕上真实的节点与结构，是最高事实来源；【检索资料】作为原理补充。两者冲突时以真实状态为准。
+2. 严格依据资料与真实状态，不要编造资料/状态以外的知识点或伪造成功/失败案例。
+3. 如果真实状态/检索资料不足以回答，坦诚说明“资料/状态里没讲清楚这部分”，不要硬编。
+4. 用中文，简洁、有结构（必要时用步骤/要点），面向“面试怎么答”讲清原理与触发条件。
+5. 若回答涉及图里的具体节点，在 highlight_nodes 给出这些节点的整数值。
+6. 若某条【检索资料】与用户问题无关，请直接忽略，不要据此作答；不要把不相关的资料当作答案依据，也不要为了凑内容而引用它。"""
 
 
 def build_prompt(question, hits, context):
-    ctx_text = context if isinstance(context, str) else json.dumps(context, ensure_ascii=False)
+    if isinstance(context, dict):
+        blocks = []
+        if context.get("tree_state"):
+            blocks.append("【当前数据结构真实状态（节点值+父子结构，务必以此为准）】\n" + str(context["tree_state"]))
+        if context.get("structure"):
+            blocks.append("【结构类型】" + str(context["structure"]))
+        if context.get("desc"):
+            blocks.append("【当前步骤】" + str(context["desc"]))
+        if context.get("highlight_ids"):
+            blocks.append("【本步涉及节点id】" + str(context["highlight_ids"]))
+        for k, v in context.items():
+            if k not in ("tree_state", "structure", "desc", "highlight_ids"):
+                blocks.append(f"【{k}】{v}")
+        ctx_text = "\n\n".join(blocks)
+    else:
+        ctx_text = context if isinstance(context, str) else json.dumps(context, ensure_ascii=False)
     knowledge = "\n\n".join(
         f"[资料 {i+1} | {h.metadata.get('source','')} | {h.metadata.get('structure','')}]\n{h.text}"
         for i, h in enumerate(hits)

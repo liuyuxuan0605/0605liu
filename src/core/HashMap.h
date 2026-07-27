@@ -42,7 +42,7 @@ public:
         FrameList frames;
         int b = bucket(key);
         frames.push_back(makeFrame(StepType::HashCompute,
-            "hash(\"" + key + "\") % " + std::to_string(CAP) + " = " + std::to_string(b),
+            bucketExpr(key),
             {bucketId(b)}, "#FFC107"));
         Entry* cur = buckets_[b].get();
         Entry* prev = nullptr;
@@ -73,7 +73,7 @@ public:
         FrameList frames;
         int b = bucket(key);
         frames.push_back(makeFrame(StepType::HashCompute,
-            "hash(\"" + key + "\") % " + std::to_string(CAP) + " = " + std::to_string(b),
+            bucketExpr(key),
             {bucketId(b)}, "#FFC107"));
         Entry* cur = buckets_[b].get();
         Entry* prev = nullptr;
@@ -101,7 +101,7 @@ public:
         FrameList frames;
         int b = bucket(key);
         frames.push_back(makeFrame(StepType::HashCompute,
-            "hash(\"" + key + "\") % " + std::to_string(CAP) + " = " + std::to_string(b),
+            bucketExpr(key),
             {bucketId(b)}, "#FFC107"));
         Entry* cur = buckets_[b].get();
         while (cur) {
@@ -136,8 +136,32 @@ private:
     int size_ = 0;
 
     static int bucket(const std::string& key) {
+        // 数字键用整数取模，符合教学直觉；非数字键回退到字符串哈希。
+        try {
+            std::size_t pos = 0;
+            int v = std::stoi(key, &pos);
+            if (pos == key.size()) {
+                int r = v % CAP;
+                return r < 0 ? r + CAP : r;
+            }
+        } catch (...) {}
         return static_cast<int>(std::hash<std::string>{}(key) % CAP);
     }
+
+    static std::string bucketExpr(const std::string& key) {
+        try {
+            std::size_t pos = 0;
+            int v = std::stoi(key, &pos);
+            if (pos == key.size()) {
+                int b = v % CAP;
+                if (b < 0) b += CAP;
+                return key + " % " + std::to_string(CAP) + " = " + std::to_string(b);
+            }
+        } catch (...) {}
+        int b = static_cast<int>(std::hash<std::string>{}(key) % CAP);
+        return "hash(\"" + key + "\") % " + std::to_string(CAP) + " = " + std::to_string(b);
+    }
+
     static int bucketId(int b) { return -(b + 1); }   // stable negative ids for headers
 
     Frame makeFrame(StepType t, const std::string& d, const std::vector<int>& hl,

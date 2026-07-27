@@ -43,7 +43,6 @@ private:
     double m_viewW = 920, m_viewH = 600;
     std::unordered_map<int, VisualNode*> m_nodes;
     std::map<std::pair<int,int>, VisualEdge*> m_edges;
-    int m_lastNodeCount = -1;
     std::unordered_map<int, QColor> m_savedFills;
 };
 

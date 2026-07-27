@@ -27,3 +27,40 @@ rag-service/naive_index.pkl
 rag-service/.env
 rag-service/chroma_db/
 *.pkl
+
+# === 排除：RAG 知识库语料（AI 生成的讲解 .md，不对外）===
+rag-service/data/
+
+# === 排除：本会话生成的调试/诊断/报告文档（非应用代码）===
+AVL_FIX_ROUND7.md
+AVL_SAN_DIAGNOSIS.md
+RB_AVL_CRASH_FIX_ROUND8.md
+RB_AVL_ROUND9.md
+RB_CRASH_DIAGNOSIS.md
+round4_fixes.md
+round5_fixes.md
+overview.md
+AI讲解模块功能文档.md
+
+# === 排除：调试/探针脚本（非应用代码）===
+bplus_debug.py
+bplus_debug2.py
+bplus_target.py
+bplus_target2.py
+bplus_v3.py
+bplus_v4.py
+bplus_v5.py
+bplus_variant.py
+btree_debug.py
+rag-service/_probe_api.py
+rag-service/_probe_bailian.py
+rag-service/_probe_model.py
+rag-service/_probe_native.py
+rag-service/_selftest.py
+
+# === 排除：报告/日志/agent 配置/锁文件 ===
+rag-service/EVAL_REPORT.md
+rag-service/server_run.log
+rag-service/skills-lock.json
+rag-service/.agents/
+rag-service/.claude/

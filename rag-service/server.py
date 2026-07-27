@@ -41,6 +41,7 @@ try:
     _retriever = build_retriever(
         RETRIEVER, EMBEDDING_MODEL,
         api_key=OPENAI_API_KEY, base_url=OPENAI_BASE_URL, data_dir=DATA_DIR,
+        chat_model=OPENAI_MODEL,
     )
     if isinstance(_retriever, NaiveRetriever):
         if os.path.exists(INDEX_PATH) and not _index_is_stale():

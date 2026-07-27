@@ -5,6 +5,9 @@
 #include <QLineEdit>
 #include <QNetworkAccessManager>
 #include <QNetworkReply>
+#include <QPushButton>
+#include <QLabel>
+#include <QJsonObject>
 #include "aiplugininterface.h"
 
 namespace dsv {
@@ -20,6 +23,7 @@ class AIChatPlugin : public QObject, public AIPluginInterface {
 public:
     AIChatPlugin(QObject* parent = nullptr);
     QWidget* createDock(dsv::StepAnimator* animator, dsv::DSScene* scene) override;
+    void setTheme(bool dark) override;
 
 private slots:
     void onFrameChanged(int index, int total, const QString& desc);
@@ -27,11 +31,18 @@ private slots:
     void onReply(QNetworkReply* reply);
 
 private:
-    void postAsk(const QString& question, const QJsonObject& ctx);
+    void postAsk(const QString& question, const QJsonObject& ctx, bool autoFollow);
+    void appendBubble(const QString& sender, const QString& color, const QString& text,
+                      bool userSide);
+    void scrollLogToBottom();
     dsv::StepAnimator* m_animator = nullptr;
     dsv::DSScene* m_scene = nullptr;
     QTextEdit* m_log = nullptr;
     QLineEdit* m_input = nullptr;
+    QPushButton* m_sendBtn = nullptr;
+    QLabel* m_statusLabel = nullptr;
     QNetworkAccessManager* m_net = nullptr;
     QString m_endpoint = "http://localhost:8000/ask";
+    bool m_dark = false;
+    bool m_waiting = false;
 };

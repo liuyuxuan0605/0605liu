@@ -1,4 +1,5 @@
 #include "DSSceneView.h"
+#include "DSScene.h"
 #include <QWheelEvent>
 #include <QMouseEvent>
 #include <QScrollBar>
@@ -10,6 +11,9 @@ DSSceneView::DSSceneView(QGraphicsScene* scene, QWidget* parent)
 {
     setRenderHint(QPainter::Antialiasing);
     setViewportUpdateMode(QGraphicsView::FullViewportUpdate);
+    // 横竖滚动条始终显示，方便用户像图片里那样拖动查看超出视口的节点
+    setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOn);
+    setVerticalScrollBarPolicy(Qt::ScrollBarAlwaysOn);
     // Keep default drag mode (NoDrag) so left-click works for node interaction.
     // Pan is handled by middle button, zoom by Ctrl+wheel.
 }
@@ -79,9 +83,47 @@ void DSSceneView::mouseReleaseEvent(QMouseEvent* e) {
     }
 }
 
+void DSSceneView::resizeEvent(QResizeEvent* e) {
+    QGraphicsView::resizeEvent(e);
+    // 让布局引擎以当前视口大小为参考，内容超出时滚动条自然出现
+    if (scene()) {
+        auto* ds = qobject_cast<DSScene*>(scene());
+        if (ds) ds->setViewSize(viewport()->width(), viewport()->height());
+    }
+}
+
 void DSSceneView::resetView() {
     resetTransform();       // reset visual transform to identity
     m_zoomFactor = 1.0;    // keep zoom factor in sync (fixes Ctrl+wheel jump after switch)
+    emit zoomChanged(m_zoomFactor);
+}
+
+void DSSceneView::setZoomFactor(double factor) {
+    if (factor < 0.1) factor = 0.1;
+    if (factor > 10.0) factor = 10.0;
+    double ratio = factor / m_zoomFactor;
+    if (qFuzzyCompare(ratio, 1.0)) return;
+
+    // zoom centered on the current viewport center so the slider feels predictable
+    QPointF center = mapToScene(viewport()->rect().center());
+    scale(ratio, ratio);
+    centerOn(center);
+
+    m_zoomFactor = factor;
+    emit zoomChanged(m_zoomFactor);
+}
+
+void DSSceneView::fitInContent(const QRectF& rect) {
+    if (!scene()) return;
+    resetTransform();
+    fitInView(rect, Qt::KeepAspectRatio);
+    m_zoomFactor = transform().m11();
+    emit zoomChanged(m_zoomFactor);
+}
+
+void DSSceneView::fitToContent() {
+    if (!scene()) return;
+    fitInContent(scene()->itemsBoundingRect().adjusted(-40, -40, 40, 40));
 }
 
 } // namespace dsv

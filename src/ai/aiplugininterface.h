@@ -13,6 +13,9 @@ class AIPluginInterface {
 public:
     virtual ~AIPluginInterface() = default;
     virtual QWidget* createDock(dsv::StepAnimator* animator, dsv::DSScene* scene) = 0;
+    // 主题切换通知：主程序在浅色/深色切换后调用，插件事先无需知道主题细节。
+    // 默认空实现，保证旧插件也能加载。
+    virtual void setTheme(bool /*dark*/) {}
 };
 
 #define AIPluginInterface_iid "dsv.AIPluginInterface/1.0"

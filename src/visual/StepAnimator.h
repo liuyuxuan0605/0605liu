@@ -85,6 +85,11 @@ public:
     double speed() const { return m_speed; }
     bool isPlaying() const { return m_playing; }
     int currentIndex() const { return m_index; }
+    // 暴露当前帧，供外部插件(AI 助教)读取真实结构状态(节点值+父子边)以接地回答
+    const Frame* currentFrame() const {
+        if (m_frames.empty()) return nullptr;
+        return &m_frames[m_index];
+    }
     int total() const { return static_cast<int>(m_frames.size()); }
 
 signals:

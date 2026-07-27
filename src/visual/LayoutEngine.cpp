@@ -97,17 +97,37 @@ std::unordered_map<int, QPointF> LayoutEngine::layout(DSKind kind,
     }
 
     if (kind == DSKind::HashMap) {
+        // Determine bucket capacity from headers (negative ids, index = bucket number).
+        int cap = 0;
+        for (const auto& n : frame.nodes)
+            if (n.id < 0) cap = std::max(cap, n.index + 1);
+        if (cap == 0) cap = 8;
+
+        // Wrap buckets into a grid so all of them fit in the current viewport.
+        // Choose the smallest number of rows such that the required columns fit.
+        const double BUCKET_VS = 220;   // vertical gap between bucket rows
+        int rows = 1;
+        while (rows < cap) {
+            int cols = (cap + rows - 1) / rows;   // ceil(cap / rows)
+            if (cols * HS <= viewW - 2 * baseX) break;
+            ++rows;
+        }
+        int cols = (cap + rows - 1) / rows;
+
         for (const auto& n : frame.nodes) {
             if (n.id < 0) {  // bucket header: index holds bucket number
-                double bx = baseX + n.index * HS;
-                pos[n.id] = QPointF(bx, baseY);
-                // walk chain
+                int row = n.index / cols;
+                int col = n.index % cols;
+                double bx = baseX + col * HS;
+                double by = baseY + row * BUCKET_VS;
+                pos[n.id] = QPointF(bx, by);
+                // walk chain downward from this bucket
                 int chainPos = 0;
                 int cur = -1;
                 for (const auto& e : frame.edges)
                     if (e.kind == "bucket" && e.fromId == n.id) { cur = e.toId; break; }
                 while (cur != -1) {
-                    pos[cur] = QPointF(bx, baseY + (chainPos + 1) * VS);
+                    pos[cur] = QPointF(bx, by + (chainPos + 1) * VS);
                     cur = nextOf(cur); chainPos++;
                 }
             }

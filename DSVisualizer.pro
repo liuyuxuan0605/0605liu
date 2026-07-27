@@ -20,7 +20,7 @@ DESTDIR = $$PWD/bin
 # 让 AI 插件 DLL 能反向调用主程序中的 DSScene / StepAnimator：
 # 导出 EXE 全部符号，并生成导入库 bin/libDSVisualizer.a，供插件链接。
 win32 {
-    QMAKE_LFLAGS += -Wl,--export-all-symbols -Wl,--out-implib,bin/libDSVisualizer.a
+    QMAKE_LFLAGS += -Wl,--export-all-symbols -Wl,--out-implib,$$PWD/bin/libDSVisualizer.a
 }
 
 # C++17 (MinGW 7.3 supports it)
