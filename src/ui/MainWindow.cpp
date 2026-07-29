@@ -545,9 +545,12 @@ void MainWindow::loadAiPlugin() {
     // 把 AI 插件的"跳转视图"信号接到主窗口切换槽，让 AI 能主动切换数据结构。
     // 用 qobject_cast 拿到具体 AIChatPlugin*（requestJump 信号声明在插件类，不在接口里）。
     if (auto* chat = qobject_cast<AIChatPlugin*>(inst)) {
-        connect(chat, &AIChatPlugin::requestJump, this, &MainWindow::switchStructure);
+        // 必须用旧式 SIGNAL/SLOT 连接：AIChatPlugin 的实现（含信号体）只编译进插件 DLL，
+        // 主 exe 不链接该符号，新式指针-to-member 写法会导致链接期 undefined reference。
+        // 旧式靠运行时元对象查名，正好契合插件边界。
+        connect(chat, SIGNAL(requestJump(QString)), this, SLOT(switchStructure(QString)));
         // step_explain 多步演示：AI 驱动前端执行具体操作（复用 runOperation 播放 Frame 动画）
-        connect(chat, &AIChatPlugin::requestRunOperation, this, &MainWindow::runOperation);
+        connect(chat, SIGNAL(requestRunOperation(QString, QString)), this, SLOT(runOperation(QString, QString)));
     }
 
     QWidget* dock = m_aiPlugin->createDock(m_animator, m_scene);

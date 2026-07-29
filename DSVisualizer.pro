@@ -9,7 +9,7 @@
 # and does NOT depend on Qt, so it can also be unit-tested standalone
 # (see tests/DSVisualizerTests.pro).
 
-QT += widgets
+QT += widgets network
 
 TARGET  = DSVisualizer
 TEMPLATE = app
