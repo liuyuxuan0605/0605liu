@@ -1,6 +1,5 @@
 #include "MainWindow.h"
 #include "../core/Factory.h"
-#include "../ai/aichatplugin.h"   // 用于把 AI 插件的 requestJump 连到 switchStructure
 #include <algorithm>
 #include <QApplication>
 #include <QGraphicsView>
@@ -542,16 +541,14 @@ void MainWindow::loadAiPlugin() {
         return;
     }
 
-    // 把 AI 插件的"跳转视图"信号接到主窗口切换槽，让 AI 能主动切换数据结构。
-    // 用 qobject_cast 拿到具体 AIChatPlugin*（requestJump 信号声明在插件类，不在接口里）。
-    if (auto* chat = qobject_cast<AIChatPlugin*>(inst)) {
-        // 必须用旧式 SIGNAL/SLOT 连接：AIChatPlugin 的实现（含信号体）只编译进插件 DLL，
-        // 主 exe 不链接该符号，新式指针-to-member 写法会导致链接期 undefined reference。
-        // 旧式靠运行时元对象查名，正好契合插件边界。
-        connect(chat, SIGNAL(requestJump(QString)), this, SLOT(switchStructure(QString)));
-        // step_explain 多步演示：AI 驱动前端执行具体操作（复用 runOperation 播放 Frame 动画）
-        connect(chat, SIGNAL(requestRunOperation(QString, QString)), this, SLOT(runOperation(QString, QString)));
-    }
+    // 用旧式 SIGNAL/SLOT 把 AI 插件的跳转/执行信号接到主窗口。
+    // 关键：绝不能在主 exe 里引用具体类 AIChatPlugin（qobject_cast<AIChatPlugin*> 或
+    // 新式指针-to-member 连接都不行），因为 AIChatPlugin 的 staticMetaObject / 信号体
+    // 只编译进插件 DLL，主 exe 不链接这些符号 -> undefined reference。
+    // 直接用 inst（QObject*）配字符串信号名，运行时由元对象查名，不引用任何 dll 符号。
+    connect(inst, SIGNAL(requestJump(QString)), this, SLOT(switchStructure(QString)));
+    // step_explain 多步演示：AI 驱动前端执行具体操作（复用 runOperation 播放 Frame 动画）
+    connect(inst, SIGNAL(requestRunOperation(QString, QString)), this, SLOT(runOperation(QString, QString)));
 
     QWidget* dock = m_aiPlugin->createDock(m_animator, m_scene);
     if (!dock) {
