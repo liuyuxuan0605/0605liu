@@ -78,4 +78,27 @@ inline const char* kindToString(DSKind k) {
     return "";
 }
 
+// AI 跳转用：把后端返回的字符串名（与 kindToString 完全对应）解析为 DSKind。
+// 返回 false 表示无法识别（AI 可能返回了非法名），调用方应忽略。
+inline bool kindFromString(const std::string& s, DSKind& out) {
+    if (s == "SinglyLinkedList")       out = DSKind::SinglyLinkedList;
+    else if (s == "DoublyLinkedList")  out = DSKind::DoublyLinkedList;
+    else if (s == "Stack")             out = DSKind::Stack;
+    else if (s == "Queue")             out = DSKind::Queue;
+    else if (s == "BinarySearchTree")  out = DSKind::BinarySearchTree;
+    else if (s == "AVLTree")           out = DSKind::AVLTree;
+    else if (s == "HashMap")           out = DSKind::HashMap;
+    else if (s == "MinHeap")           out = DSKind::MinHeap;
+    else if (s == "RedBlackTree")      out = DSKind::RedBlackTree;
+    else if (s == "Deque")             out = DSKind::Deque;
+    else if (s == "BlockingQueue")     out = DSKind::BlockingQueue;
+    else if (s == "BTree")             out = DSKind::BTree;
+    else if (s == "BPlusTree")         out = DSKind::BPlusTree;
+    else if (s == "RingBuffer")        out = DSKind::RingBuffer;
+    else if (s == "Graph")             out = DSKind::Graph;
+    else if (s == "LRUCache")          out = DSKind::LRUCache;
+    else return false;
+    return true;
+}
+
 } // namespace dsv

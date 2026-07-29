@@ -76,10 +76,10 @@ if RETRIEVER in ("semantic", "chroma") and not OPENAI_API_KEY:
 def answer(question, context):
     structure = context.get("structure", "") if isinstance(context, dict) else ""
     hits = _retriever.query(question, k=5, structure=structure or None)
-    ans, hl, src = call_llm(
+    ans, hl, src, actions = call_llm(
         question, hits, context, LLM_PROVIDER, OPENAI_API_KEY, OPENAI_BASE_URL, OPENAI_MODEL
     )
-    return {"answer": ans, "highlight_nodes": hl, "sources": src}
+    return {"answer": ans, "highlight_nodes": hl, "sources": src, "actions": actions}
 
 
 class _Handler(BaseHTTPRequestHandler):

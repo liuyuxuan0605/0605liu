@@ -8,6 +8,11 @@ import json
 import urllib.request
 import urllib.error
 
+# 相关性阈值：chroma/semantic 的余弦相似度 >= 此值才视为"有相关命中"。
+# 用于让 q_match 在向量检索路径上也是真实信号（原先硬编码 True，
+# 导致 llm.py 的空检索硬拒闸门在 chroma 下永不触发）。
+SIM_RELEVANT = 0.25
+
 
 class Hit:
     def __init__(self, text, metadata, score, best_idf=0.0, q_match=False):
@@ -483,7 +488,7 @@ class SemanticRetriever(BaseRetriever):
             candidates.append((sim, i))
         candidates.sort(key=lambda x: -x[0])
         hits = [Hit(self._docs[i][0], self._docs[i][1], float(sim),
-                    best_idf=0.0, q_match=True) for sim, i in candidates]
+                    best_idf=0.0, q_match=sim >= SIM_RELEVANT) for sim, i in candidates]
         hits = _dedup_by_source(hits, k)
         # 结构过滤无结果时回退全库，保证总有资料可答
         if not hits and structure:
@@ -492,7 +497,7 @@ class SemanticRetriever(BaseRetriever):
                 key=lambda x: -x[0],
             )
             fb_hits = [Hit(self._docs[i][0], self._docs[i][1], float(sim),
-                          best_idf=0.0, q_match=True) for sim, i in fallback]
+                          best_idf=0.0, q_match=sim >= SIM_RELEVANT) for sim, i in fallback]
             hits = _dedup_by_source(fb_hits, k)
         return hits
 
@@ -709,7 +714,7 @@ class ChromaRetriever(BaseRetriever):
         hits = []
         for d, m, dist in zip(docs, metas, dists):
             sim = 1.0 - (dist if dist is not None else 1.0)  # chroma 返回余弦距离
-            hits.append(Hit(d, m, float(sim), best_idf=0.0, q_match=True))
+            hits.append(Hit(d, m, float(sim), best_idf=0.0, q_match=sim >= SIM_RELEVANT))
         return hits
 
 

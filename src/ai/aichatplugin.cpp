@@ -364,4 +364,17 @@ void AIChatPlugin::onReply(QNetworkReply* reply) {
         for (const auto& v : src) s << v.toString();
         appendBubble("AI", "#8A94A6", "来源: " + s.join(" | "), false);
     }
+
+    // actions：让 AI 主动驱动前端（如切换数据结构视图）
+    QJsonArray actions = obj.value("actions").toArray();
+    for (const QJsonValue& v : actions) {
+        QJsonObject act = v.toObject();
+        if (act.value("type").toString() == "jump") {
+            QString structure = act.value("structure").toString().trimmed();
+            if (!structure.isEmpty()) {
+                emit requestJump(structure);
+                appendBubble("AI", "#0F6E56", "[已切换视图] " + structure, false);
+            }
+        }
+    }
 }

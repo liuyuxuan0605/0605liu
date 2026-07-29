@@ -25,6 +25,9 @@ public:
     QWidget* createDock(dsv::StepAnimator* animator, dsv::DSScene* scene) override;
     void setTheme(bool dark) override;
 
+signals:
+    void requestJump(const QString& structure);
+
 private slots:
     void onFrameChanged(int index, int total, const QString& desc);
     void onAskClicked();

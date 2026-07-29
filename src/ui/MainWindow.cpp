@@ -1,5 +1,6 @@
 #include "MainWindow.h"
 #include "../core/Factory.h"
+#include "../ai/aichatplugin.h"   // 用于把 AI 插件的 requestJump 连到 switchStructure
 #include <algorithm>
 #include <QApplication>
 #include <QGraphicsView>
@@ -135,6 +136,18 @@ void MainWindow::switchKind(int index) {
     m_log->setProgress(0, 0);
     m_opCount = 0;
     updateStatus();
+}
+
+void MainWindow::switchStructure(const QString& structure) {
+    // AI 讲解插件请求跳转到某个数据结构视图：把字符串解析成 DSKind，
+    // 再复用 switchKind 完成"重建空结构 + 同步下拉框 + 重置画布"的全部动作。
+    // switchKind 内部用 QSignalBlocker 设置下拉框，不会反向触发递归。
+    DSKind k;
+    if (!kindFromString(structure.toStdString(), k)) {
+        qDebug() << "[AI] jump requested unknown structure:" << structure;
+        return;
+    }
+    switchKind(static_cast<int>(k));
 }
 
 void MainWindow::runOperation(const QString& op, const QString& value) {
@@ -527,6 +540,12 @@ void MainWindow::loadAiPlugin() {
     if (!m_aiPlugin) {
         qDebug() << "[AI] plugin does not implement AIPluginInterface";
         return;
+    }
+
+    // 把 AI 插件的"跳转视图"信号接到主窗口切换槽，让 AI 能主动切换数据结构。
+    // 用 qobject_cast 拿到具体 AIChatPlugin*（requestJump 信号声明在插件类，不在接口里）。
+    if (auto* chat = qobject_cast<AIChatPlugin*>(inst)) {
+        connect(chat, &AIChatPlugin::requestJump, this, &MainWindow::switchStructure);
     }
 
     QWidget* dock = m_aiPlugin->createDock(m_animator, m_scene);

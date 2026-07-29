@@ -31,6 +31,7 @@ private slots:
     void undo();
     void redo();
     void onDegreeChanged(int maxDegree);  // B/B+ tree Max Degree changed → rebuild
+    void switchStructure(const QString& structure);   // AI 请求跳转到的数据结构
 
 private:
     QVector<QPair<QString, QString>> buildPreset(DSKind kind) const;
