@@ -173,6 +173,10 @@ AIChatPlugin::AIChatPlugin(QObject* parent) : QObject(parent) {
     if (!env.isEmpty()) {
         m_endpoint = QString::fromUtf8(env);
     }
+    // 多步演示看门狗：某步未产生动画（空/无效操作）时也能继续推进，避免卡死
+    m_stepWatchdog = new QTimer(this);
+    m_stepWatchdog->setSingleShot(true);
+    connect(m_stepWatchdog, &QTimer::timeout, this, &AIChatPlugin::onStepTimeout);
 }
 
 QWidget* AIChatPlugin::createDock(dsv::StepAnimator* animator, dsv::DSScene* scene) {
@@ -222,9 +226,16 @@ QWidget* AIChatPlugin::createDock(dsv::StepAnimator* animator, dsv::DSScene* sce
     connect(m_sendBtn, &QPushButton::clicked, this, &AIChatPlugin::onAskClicked);
     connect(m_input, &QLineEdit::returnPressed, this, &AIChatPlugin::onAskClicked);
     connect(m_net, &QNetworkAccessManager::finished, this, &AIChatPlugin::onReply);
-    if (m_animator)
+    if (m_animator) {
         connect(m_animator, &dsv::StepAnimator::frameChanged,
                 this, &AIChatPlugin::onFrameChanged);
+        // 多步演示：动画播完（playStateChanged(false)）时进入下一步。只连一次，避免重复连接。
+        if (!m_animatorConnected) {
+            connect(m_animator, &dsv::StepAnimator::playStateChanged,
+                    this, &AIChatPlugin::onStepPlayState);
+            m_animatorConnected = true;
+        }
+    }
 
     // 初始欢迎语
     appendBubble("AI", "#0F6E56",
@@ -291,6 +302,83 @@ void AIChatPlugin::onFrameChanged(int index, int total, const QString& desc) {
         }
     }
     postAsk(desc, ctx, /*autoFollow=*/true);
+}
+
+void AIChatPlugin::startStepExplain(const QJsonObject& act) {
+    // AI 主动分步演示：先按需切换结构，再依次执行 steps 里的操作（每步播完动画再下一步）
+    QString structure = act.value("structure").toString().trimmed();
+    QJsonArray steps = act.value("steps").toArray();
+    if (steps.isEmpty()) {
+        // 兼容单操作写法：op + value
+        QString op = act.value("op").toString().trimmed();
+        QString val = act.value("value").toString();
+        if (!op.isEmpty()) {
+            QJsonObject step;
+            step["op"] = op;
+            step["value"] = val;
+            steps.append(step);
+        }
+    }
+    if (steps.isEmpty()) {
+        appendBubble("AI", "#C2185B", "[演示指令为空，已忽略]", false);
+        return;
+    }
+    if (!structure.isEmpty()) {
+        emit requestJump(structure);
+        appendBubble("AI", "#0F6E56", "[已切换视图并分步演示] " + structure, false);
+    } else {
+        appendBubble("AI", "#0F6E56", "[分步演示中…]", false);
+    }
+    m_stepQueue = steps;
+    m_stepIndex = 0;
+    m_stepping = true;
+    m_stepPlaying = false;
+    emitNextStep();
+}
+
+void AIChatPlugin::emitNextStep() {
+    if (m_stepIndex >= m_stepQueue.size()) {
+        m_stepping = false;
+        appendBubble("AI", "#0F6E56", "[演示完成]", false);
+        return;
+    }
+    QJsonObject step = m_stepQueue.at(m_stepIndex).toObject();
+    QString op = step.value("op").toString().trimmed();
+    QString val = step.value("value").toString();
+    if (op.isEmpty()) {        // 跳过无效步
+        m_stepIndex++;
+        emitNextStep();
+        return;
+    }
+    emit requestRunOperation(op, val);
+    m_stepWatchdog->start(8000);   // 看门狗：该步未产生动画也能推进
+}
+
+void AIChatPlugin::onStepPlayState(bool playing) {
+    if (!m_stepping) return;
+    if (playing) {
+        m_stepPlaying = true;
+        m_stepWatchdog->stop();    // 动画在播，取消看门狗
+        return;
+    }
+    // 动画结束（pause 触发的 false）。setFrames 的 reset 也会发 false，但那时 m_stepPlaying 仍为 false，忽略。
+    if (m_stepPlaying) {
+        m_stepPlaying = false;
+        m_stepIndex++;
+        emitNextStep();
+    }
+}
+
+void AIChatPlugin::onStepTimeout() {
+    if (!m_stepping) return;
+    if (!m_stepPlaying) {
+        // 该步从未开始播放（空/无效操作）→ 直接跳过进入下一步
+        m_stepIndex++;
+        emitNextStep();
+    } else {
+        // 动画仍在播（较长）→ 再给一次机会
+        m_stepWatchdog->start(8000);
+    }
 }
 
 void AIChatPlugin::onAskClicked() {
@@ -368,13 +456,17 @@ void AIChatPlugin::onReply(QNetworkReply* reply) {
     // actions：让 AI 主动驱动前端（如切换数据结构视图）
     QJsonArray actions = obj.value("actions").toArray();
     for (const QJsonValue& v : actions) {
+        if (m_stepping) continue;   // 演示进行中：忽略自动跟随等后续回复里的动作，避免嵌套演示/死循环
         QJsonObject act = v.toObject();
-        if (act.value("type").toString() == "jump") {
+        QString type = act.value("type").toString();
+        if (type == "jump") {
             QString structure = act.value("structure").toString().trimmed();
             if (!structure.isEmpty()) {
                 emit requestJump(structure);
                 appendBubble("AI", "#0F6E56", "[已切换视图] " + structure, false);
             }
+        } else if (type == "step_explain") {
+            startStepExplain(act);
         }
     }
 }

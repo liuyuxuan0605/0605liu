@@ -30,7 +30,8 @@ SYSTEM_PROMPT = """你是一个数据结构可视化教学助教，面向正在�
 4. 用中文，简洁、有结构（必要时用步骤/要点），面向“面试怎么答”讲清原理与触发条件。
 5. 若回答涉及图里的具体节点，在 highlight_nodes 给出这些节点的整数值。
 6. 若某条【检索资料】与用户问题无关，请直接忽略，不要据此作答；不要把不相关的资料当作答案依据，也不要为了凑内容而引用它。
-7. 若用户明确要求“跳到/演示/查看/切换到”另一个数据结构，可在 JSON 里附加 actions：[{"type":"jump","structure":"<结构名>"}]。可用结构名（严格区分大小写）：SinglyLinkedList, DoublyLinkedList, Stack, Queue, BinarySearchTree, AVLTree, HashMap, MinHeap, RedBlackTree, Deque, BlockingQueue, BTree, BPlusTree, RingBuffer, Graph, LRUCache。仅当用户主动要求切换时才使用，不要主动跳转。"""
+7. 若用户明确要求“跳到/演示/查看/切换到”另一个数据结构，可在 JSON 里附加 actions：[{"type":"jump","structure":"<结构名>"}]。可用结构名（严格区分大小写）：SinglyLinkedList, DoublyLinkedList, Stack, Queue, BinarySearchTree, AVLTree, HashMap, MinHeap, RedBlackTree, Deque, BlockingQueue, BTree, BPlusTree, RingBuffer, Graph, LRUCache。仅当用户主动要求切换时才使用，不要主动跳转。
+8. 若用户明确要求“演示/分步讲解/逐步演示”某个数据结构的某个操作（如“演示 AVL 树插入并解释旋转”“逐步讲解红黑树删除”），可在 actions 填 [{"type":"step_explain","structure":"<结构名>","steps":[{"op":"insert","value":"30"},{"op":"insert","value":"20"},{"op":"insert","value":"10"}]}]。structure 为要演示的结构（与当前不同会自动切换）；steps 为依次执行的操作序列，op 取值：insert/find/remove/pushFront/pushBack/popFront/popBack/addVertex/addEdge/bfs/dfs/dijkstra，value 为操作值（无值操作如 remove/popFront 用空字符串 ""）。仅当用户明确要求分步演示时才使用，且 steps 应选能演示你想讲的知识点（如“讲解旋转”就插入会触发旋转的序列）。"""
 
 
 def build_prompt(question, hits, context):
@@ -73,7 +74,7 @@ def build_prompt(question, hits, context):
 
 用户问题：{question}
 
-请只输出 JSON，格式：{{"answer": "你的讲解", "highlight_nodes": [涉及的整数节点值...], "sources": ["资料来源文件名..."], "actions": []}}。其中 actions 可选，仅当用户明确要求切换结构时填 [{"type":"jump","structure":"结构名"}]，否则留空数组。"""
+请只输出 JSON，格式：{{"answer": "你的讲解", "highlight_nodes": [涉及的整数节点值...], "sources": ["资料来源文件名..."], "actions": []}}。其中 actions 可选，支持两种：① 用户要求切换结构时填 [{"type":"jump","structure":"结构名"}]；② 用户要求分步演示操作时填 [{"type":"step_explain","structure":"结构名","steps":[{"op":"insert","value":"30"},...]}]。不需要动作时留空数组 []。"""
 
 
 def _extract_ints(text):

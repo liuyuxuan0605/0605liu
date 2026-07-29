@@ -8,6 +8,8 @@
 #include <QPushButton>
 #include <QLabel>
 #include <QJsonObject>
+#include <QJsonArray>
+#include <QTimer>
 #include "aiplugininterface.h"
 
 namespace dsv {
@@ -27,11 +29,14 @@ public:
 
 signals:
     void requestJump(const QString& structure);
+    void requestRunOperation(const QString& op, const QString& value);
 
 private slots:
     void onFrameChanged(int index, int total, const QString& desc);
     void onAskClicked();
     void onReply(QNetworkReply* reply);
+    void onStepPlayState(bool playing);   // 多步演示：动画播完→进入下一步
+    void onStepTimeout();                 // 看门狗：某步未产生动画也能继续
 
 private:
     void postAsk(const QString& question, const QJsonObject& ctx, bool autoFollow);
@@ -48,4 +53,14 @@ private:
     QString m_endpoint = "http://localhost:8000/ask";
     bool m_dark = false;
     bool m_waiting = false;
+
+    // step_explain 多步演示排队状态
+    QJsonArray m_stepQueue;
+    int m_stepIndex = 0;
+    bool m_stepping = false;
+    bool m_stepPlaying = false;
+    QTimer* m_stepWatchdog = nullptr;
+    bool m_animatorConnected = false;
+    void emitNextStep();                          // 取 m_stepQueue[m_stepIndex] 发出 requestRunOperation（含看门狗）
+    void startStepExplain(const QJsonObject& act); // 解析 step_explain action 并启动队列
 };

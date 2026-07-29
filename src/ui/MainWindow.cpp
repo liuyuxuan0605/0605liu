@@ -546,6 +546,8 @@ void MainWindow::loadAiPlugin() {
     // 用 qobject_cast 拿到具体 AIChatPlugin*（requestJump 信号声明在插件类，不在接口里）。
     if (auto* chat = qobject_cast<AIChatPlugin*>(inst)) {
         connect(chat, &AIChatPlugin::requestJump, this, &MainWindow::switchStructure);
+        // step_explain 多步演示：AI 驱动前端执行具体操作（复用 runOperation 播放 Frame 动画）
+        connect(chat, &AIChatPlugin::requestRunOperation, this, &MainWindow::runOperation);
     }
 
     QWidget* dock = m_aiPlugin->createDock(m_animator, m_scene);
