@@ -31,7 +31,13 @@ SYSTEM_PROMPT = """你是一个数据结构可视化教学助教，面向正在�
 5. 若回答涉及图里的具体节点，在 highlight_nodes 给出这些节点的整数值。
 6. 若某条【检索资料】与用户问题无关，请直接忽略，不要据此作答；不要把不相关的资料当作答案依据，也不要为了凑内容而引用它。
 7. 若用户明确要求“跳到/演示/查看/切换到”另一个数据结构，可在 JSON 里附加 actions：[{"type":"jump","structure":"<结构名>"}]。可用结构名（严格区分大小写）：SinglyLinkedList, DoublyLinkedList, Stack, Queue, BinarySearchTree, AVLTree, HashMap, MinHeap, RedBlackTree, Deque, BlockingQueue, BTree, BPlusTree, RingBuffer, Graph, LRUCache。仅当用户主动要求切换时才使用，不要主动跳转。
-8. 若用户明确要求“演示/分步讲解/逐步演示”某个数据结构的某个操作（如“演示 AVL 树插入并解释旋转”“逐步讲解红黑树删除”），可在 actions 填 [{"type":"step_explain","structure":"<结构名>","steps":[{"op":"insert","value":"30"},{"op":"insert","value":"20"},{"op":"insert","value":"10"}]}]。structure 为要演示的结构（与当前不同会自动切换）；steps 为依次执行的操作序列，op 取值：insert/find/remove/pushFront/pushBack/popFront/popBack/addVertex/addEdge/bfs/dfs/dijkstra，value 为操作值（无值操作如 remove/popFront 用空字符串 ""）。仅当用户明确要求分步演示时才使用，且 steps 应选能演示你想讲的知识点（如“讲解旋转”就插入会触发旋转的序列）。"""
+8. 若用户明确要求“演示/分步讲解/逐步演示/动画演示”某个数据结构的操作，或问题中出现“按顺序/依次/顺序”等明显要观察过程的词（如“演示 AVL 树插入并解释旋转”“逐步讲解红黑树删除”“动画演示栈的 push/pop”“按顺序插入 12,3,9,18,5”），**必须在 actions 中返回 step_explain，禁止只给文字解释**。structure 为要演示的结构（与当前不同会自动切换）；steps 为依次执行的操作序列，op 取值：insert/find/remove/pushFront/pushBack/popFront/popBack/addVertex/addEdge/bfs/dfs/dijkstra，value 为操作值（无值操作如 remove/popFront 用空字符串 ""）。**若用户没有给出具体数值，你必须自行选择 3-5 个能演示该知识点的典型数值**；若用户给出多个数值（如“按顺序插入 12,3,9,18,5”），则必须把每个数值拆成一个 step，按顺序放入 steps，例如："按顺序插入 12,3,9,18,5" → [{"op":"insert","value":"12"},{"op":"insert","value":"3"},{"op":"insert","value":"9"},{"op":"insert","value":"18"},{"op":"insert","value":"5"}]。例如：演示 AVL 右旋用 30,20,10；左旋用 10,20,30；左右双旋用 30,10,20；红黑树插入触发旋转用 10,20,30；栈 push/pop 用 10,20,30,20。steps 不能为空。
+9. 若用户问题包含明确操作词 + 可选具体数值，且**没有**要求"演示/分步/逐步/动画/讲解/按顺序/依次"，则**必须在 actions 中返回 run_operation，禁止只给文字解释**。常见操作词：插入、删除、查找、push、pop、pushFront、pushBack、popFront、popBack、addVertex、addEdge、bfs、dfs、dijkstra。示例："在 AVL 树里插入 42" → [{"type":"run_operation","structure":"AVLTree","op":"insert","value":"42"}]；"push 5" → [{"type":"run_operation","op":"push","value":"5"}]；"删除 10" → [{"type":"run_operation","op":"remove","value":"10"}]。structure 仅在目标结构与当前结构不同才填（前端会自动先切换），相同则可省略。run_operation 用于"立刻执行单个操作"，与 step_explain 的"分步讲解"区分：用户要"演示/讲解步骤/按顺序看过程"用 step_explain，要"直接做某操作"用 run_operation。"""
+
+
+# ⚠️ 普通字符串（非 f-string、非 .format），其中的 { } 是 JSON 示例的合法字符，
+# 必须保持单引号包裹、绝不能放进会被求值的模板里，否则触发 "Invalid format specifier" 运行时错误。
+JSON_INSTRUCTION = '请只输出 JSON，格式：{"answer": "你的讲解", "highlight_nodes": [涉及的整数节点值...], "sources": ["资料来源文件名..."], "actions": []}。其中 actions 规则：① 用户要求切换结构时填 [{"type":"jump","structure":"结构名"}]；② 用户要求分步/逐步/动画演示时**必须**填 [{"type":"step_explain","structure":"结构名","steps":[...]}]，steps 不能为空，且用户未给数值时你要自行选择典型序列；③ 用户给出明确操作词+数值（如"插入 42""push 5""删除 10"）且未要求分步演示时**必须**填 [{"type":"run_operation","structure":"结构名","op":"insert","value":"42"}]（structure 仅目标结构≠当前时填，op 取值同②，value 无值用空串），用于立刻执行。不需要动作时才留空数组 []。'
 
 
 def build_prompt(question, hits, context):
@@ -65,16 +71,130 @@ def build_prompt(question, hits, context):
         grounding = "【检索资料相关性较低。请严格仅依据以下资料作答，资料不足时声明未覆盖，禁止补充自身知识。】"
     else:
         grounding = ""
+    # 演示类请求：动态再强调一次，防止模型只文字解释而不生成 step_explain actions
+    demo_hint = ""
+    has_demo_kw = any(kw in question for kw in ("演示", "分步", "逐步", "动画", "讲解", "按顺序", "依次", "顺序", "walk through", "show me"))
+    if has_demo_kw:
+        demo_hint = "【用户要求分步演示/按顺序观察过程，必须在 actions 中返回 step_explain；steps 不能为空。若用户没有给出具体数值，请自行选择 3-5 个典型数值；若用户给出多个数值（如“插入 12,3,9,18,5”），必须把每个数值拆成一个 step 按顺序放入 steps。】\n"
+    # 直接执行类请求：问题含操作词+数值，但未要求分步演示 → 必须 run_operation
+    run_hint = ""
+    if not has_demo_kw:
+        op_pattern = re.compile(r"(插入|删除|查找|push|pop|pushFront|pushBack|popFront|popBack|addVertex|addEdge|bfs|dfs|dijkstra)\s*(\d+)", re.IGNORECASE)
+        if op_pattern.search(question):
+            run_hint = "【用户要求直接执行某个具体操作（含操作词和数值），必须在 actions 中返回 run_operation，禁止只给文字解释。】\n"
+    # 注意：JSON 示例说明必须是普通字符串（非 f-string），否则其中的 { } 会被当成形
+    # 式字段解析，导致 "Invalid format specifier" 运行时错误。仅下面的 6 个动态字段走 f-string。
     return f"""当前可视化上下文：{ctx_text}
 
 {grounding}
 
-检索资料：
+{demo_hint}{run_hint}检索资料：
 {knowledge}
 
 用户问题：{question}
 
-请只输出 JSON，格式：{{"answer": "你的讲解", "highlight_nodes": [涉及的整数节点值...], "sources": ["资料来源文件名..."], "actions": []}}。其中 actions 可选，支持两种：① 用户要求切换结构时填 [{"type":"jump","structure":"结构名"}]；② 用户要求分步演示操作时填 [{"type":"step_explain","structure":"结构名","steps":[{"op":"insert","value":"30"},...]}]。不需要动作时留空数组 []。"""
+{JSON_INSTRUCTION}"""
+
+
+# ----------------------------------------------------------------------------
+# Direct Query Rewrite（直接改写）
+# ----------------------------------------------------------------------------
+# 作用：在检索之前，用【单次】LLM 调用把口语化 / 指代不清 / 上下文丢失的查询，
+# 改写成检索友好的规范查询（术语归一 + 上下文补全）。仅用于「向量检索路」，
+# 关键词路(TF-IDF)保持原查询不变（它自带同义词扩展兜底，且改写可能丢掉字面词）。
+#
+# 约束（防止跑偏 / 防止幻觉）：
+# - 只做「术语归一」和「上下文补全」，禁止引入资料里没有的新知识点。
+# - 输出必须是单行改写查询，不含解释 / 引号 / markdown。
+# - 若 LLM 判定无需改写（或任何失败：无 key / 网络 / 模型），一律回退原 query，
+#   绝不阻断检索（生成侧忠实度地板照常生效）。
+# ----------------------------------------------------------------------------
+
+# 闸门用的「已明确指定结构」关键词（只放具体名，不放「树/堆/图/数组」这类泛词——
+# 泛词不构成定位，用户大概率指「当前这个树」，仍需上下文补全）。
+_STRUCT_HINTS = [
+    "链表", "栈", "队列", "红黑", "avl", "二叉", "b树", "b+", "b+树", "deque",
+    "ring", "blocking", "lru", "ufds", "并查", "优先队列", "最小堆", "maxheap",
+    "minheap", "hashmap", "hash", "哈希表", "哈希",
+]
+
+
+def _rewrite_needed(question):
+    """轻量闸门：已规范的查询（含明确数值操作 / 含已知具体结构名）跳过改写，
+    省一次 LLM 调用；口语 / 指代 / 纯概念类才进入改写。"""
+    q = question.lower()
+    # 明确操作 + 数值（插入42 / push 5 / 删除10）→ 已规范
+    if re.search(r"(插入|删除|查找|push|pop|add|remove|insert|find|delete)\s*\d", q):
+        return False
+    # 已含具体结构名 → 已规范
+    for h in _STRUCT_HINTS:
+        if h in q:
+            return False
+    return True
+
+
+def rewrite_query(question, context=None, api_key="", base_url="", model=""):
+    """Direct Query Rewrite：返回（可能改写过的）检索查询字符串。
+
+    失败时原样返回 question，调用方无需额外处理。
+    """
+    if not api_key or not model:
+        return question
+    if not _rewrite_needed(question):
+        return question
+
+    # 上下文补全：把当前结构 / 步骤告诉模型，让它把省略/指代补全成具体查询
+    ctx_bits = []
+    if isinstance(context, dict):
+        if context.get("structure"):
+            ctx_bits.append(f"当前正在查看的数据结构是 {context['structure']}")
+        if context.get("desc"):
+            ctx_bits.append(f"当前步骤：{context['desc']}")
+        if context.get("tree_state"):
+            ctx_bits.append("屏幕上已有一个具体的数据结构实例")
+    ctx_text = "；".join(ctx_bits) if ctx_bits else "无额外上下文"
+
+    system = (
+        "You are a query rewriter for a data-structure visualization RAG system. "
+        "Rewrite the user's question into ONE concise, retrieval-friendly query. "
+        "Rules: (1) Normalize colloquial terms to canonical data-structure terminology "
+        "(e.g. 翻转->旋转/rotate, 加->插入/insert, 搞/弄->操作). "
+        "(2) If context provides the current structure or topic, inject it so a "
+        "pronoun/ellipsis query becomes concrete (e.g. '这个树的删除' -> 'RedBlackTree delete operation'). "
+        "(3) Do NOT invent facts or knowledge beyond what the query and context imply. "
+        "(4) Output ONLY the rewritten query on a single line: no quotes, no explanation, no markdown."
+    )
+    user = (
+        f"Context: {ctx_text}\n"
+        f"Original query: {question}\n"
+        f"Rewritten query:"
+    )
+    try:
+        payload = {
+            "model": model,
+            "messages": [
+                {"role": "system", "content": system},
+                {"role": "user", "content": user},
+            ],
+            "temperature": 0.0,
+        }
+        req = urllib.request.Request(
+            base_url.rstrip("/") + "/chat/completions",
+            data=json.dumps(payload).encode("utf-8"),
+            headers={"Authorization": f"Bearer {api_key}",
+                     "Content-Type": "application/json"},
+            method="POST",
+        )
+        with urllib.request.urlopen(req, timeout=20) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+        rewritten = data["choices"][0]["message"]["content"].strip()
+        rewritten = rewritten.strip('"').strip("'").strip("`").strip()
+        if rewritten and rewritten.lower() != question.lower():
+            print(f"    [rewrite] 查询已改写: {question!r} -> {rewritten!r}", flush=True)
+            return rewritten
+    except Exception as e:  # noqa: BLE001
+        print(f"    [rewrite] 查询改写失败，回退原文检索: {e}", flush=True)
+    return question
 
 
 def _extract_ints(text):

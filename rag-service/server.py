@@ -13,8 +13,8 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from chunks import load_chunks
-from retriever import NaiveRetriever, build_retriever
-from llm import call_llm
+from retriever import NaiveRetriever, build_retriever, _dedup_by_source
+from llm import call_llm, rewrite_query
 from config import (
     RETRIEVER, LLM_PROVIDER, OPENAI_API_KEY, OPENAI_BASE_URL, OPENAI_MODEL,
     DATA_DIR, INDEX_PATH, EMBEDDING_MODEL, PORT,
@@ -67,6 +67,89 @@ except Exception as e:  # noqa: BLE001
         _retriever.add(_chunks)
         _retriever.save(INDEX_PATH)
 print(f"retriever={RETRIEVER} llm={LLM_PROVIDER} embedding={EMBEDDING_MODEL}", flush=True)
+
+# ---- hybrid 检索：向量路(_retriever) + 关键词路(_kw, TF-IDF) 经 RRF 合并 ----
+# 关键词路复用现成的 NaiveRetriever（IDF 加权词项交集，等价于轻量 BM25）。
+# 若主路本身就是 naive（降级 / RETRIEVER=naive），则两路同一实例，
+# hybrid_search 退化为单路，避免重复检索。
+_kw = None
+if isinstance(_retriever, NaiveRetriever):
+    _kw = _retriever
+    print("[hybrid] 主路即 naive，关键词路复用（单路模式）", flush=True)
+else:
+    try:
+        _kw = NaiveRetriever()
+        if os.path.exists(INDEX_PATH) and not _index_is_stale():
+            _kw.load(INDEX_PATH)
+            print(f"[hybrid] loaded keyword index ({len(_kw.docs)} docs)", flush=True)
+        else:
+            _kw.add(_chunks)
+            _kw.save(INDEX_PATH)
+            print(f"[hybrid] built keyword index ({len(_kw.docs)} docs)", flush=True)
+    except Exception as e:  # noqa: BLE001
+        print(f"[WARN] 关键词路构建失败，退回纯向量检索: {e}", flush=True)
+        _kw = None
+
+RRF_K = 60
+
+def _passage_key(h):
+    # 文档级 RRF：以 source 为合并键。两路各自返回的 hits 已按 source 去重，
+    # 故 key 不会在单路内重复；不同路命中同一文档时在此累加 rank 贡献，
+    # 与最终 _dedup_by_source 的粒度一致（hybrid 的价值：同文档在向量路第5、
+    # 关键词路第1，合并后名次提升）。
+    return str(h.metadata.get("source", ""))
+
+def hybrid_search(question, k=5, structure=None, context=None):
+    """向量检索 + 关键词(TF-IDF)检索 双路并行，RRF 合并排名后再按来源去重。
+
+    RRF: fused_score(passage) = Σ 1/(RRF_K + rank_i)，两路排名独立贡献，
+    不要求 passage 严格对齐，覆盖面比单路宽很多（向量捕语义、关键词精准命中）。
+
+    Direct Query Rewrite：仅对「向量检索路」的查询做改写（术语归一 + 上下文补全），
+    关键词路保持原查询（自带同义词扩展兜底）。改写失败/无需改写时回退原 query，
+    不影响关键词路，也不影响最终答案的忠实度地板。
+    """
+    struct = structure or None
+    # —— 向量路查询改写（Direct Query Rewrite）——
+    # 仅在主路为向量、且 LLM 可用时尝试；改写只作用于向量路检索，
+    # 关键词路(kw_hits)仍用原始 question，保证字面兜底不丢。
+    vec_query = question
+    if _kw is not _retriever and LLM_PROVIDER != "offline" and OPENAI_API_KEY:
+        vec_query = rewrite_query(
+            question, context,
+            api_key=OPENAI_API_KEY, base_url=OPENAI_BASE_URL, model=OPENAI_MODEL,
+        )
+    vec_hits = []
+    if _kw is not _retriever:  # 主路是向量时才单独跑，避免与关键词路重复
+        vec_hits = _retriever.query(vec_query, k=max(k * 2, 10), structure=struct)
+    kw_hits = []
+    if _kw is not None and _kw is not _retriever:
+        kw_hits = _kw.query(question, k=max(k * 2, 10), structure=struct)
+    # 极端兜底：两路皆空时强制跑一次关键词路，保证总有资料可答
+    if not vec_hits and not kw_hits and _kw is not None:
+        kw_hits = _kw.query(question, k=max(k * 2, 10), structure=struct)
+
+    fused = {}
+    order = []
+    seen = set()
+    # ⚠️ 标准 RRF：每条检索路各自独立排名（rank 在每路内部从 0 起算），
+    # 不能把两路拼接后统一 enumerate——否则关键词路的 rank 被向量路长度偏移，
+    # 导致关键词路被系统性低估。逐路枚举才正确。
+    for results in (vec_hits, kw_hits):
+        for rank, h in enumerate(results):
+            key = _passage_key(h)
+            contrib = 1.0 / (RRF_K + rank)
+            if key in fused:
+                fused[key] += contrib
+            else:
+                fused[key] = contrib
+                if key not in seen:
+                    seen.add(key)
+                    order.append((key, h))
+    order.sort(key=lambda kv: -fused[kv[0]])
+    merged = [h for _, h in order[: max(k * 3, 20)]]
+    return _dedup_by_source(merged, k)
+
 if LLM_PROVIDER != "offline" and not OPENAI_API_KEY:
     print("[WARN] LLM_PROVIDER 设为 openai 但 OPENAI_API_KEY 为空，将降级为离线拼接！请检查 .env 的 OPENAI_API_KEY", flush=True)
 if RETRIEVER in ("semantic", "chroma") and not OPENAI_API_KEY:
@@ -75,7 +158,7 @@ if RETRIEVER in ("semantic", "chroma") and not OPENAI_API_KEY:
 
 def answer(question, context):
     structure = context.get("structure", "") if isinstance(context, dict) else ""
-    hits = _retriever.query(question, k=5, structure=structure or None)
+    hits = hybrid_search(question, k=5, structure=structure or None, context=context)
     ans, hl, src, actions = call_llm(
         question, hits, context, LLM_PROVIDER, OPENAI_API_KEY, OPENAI_BASE_URL, OPENAI_MODEL
     )

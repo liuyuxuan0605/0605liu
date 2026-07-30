@@ -467,6 +467,27 @@ void AIChatPlugin::onReply(QNetworkReply* reply) {
             }
         } else if (type == "step_explain") {
             startStepExplain(act);
+        } else if (type == "run_operation") {
+            // 让 AI 直接执行单个操作（如"在 AVL 树插入 42"），不走慢速分步讲解
+            QString structure = act.value("structure").toString().trimmed();
+            QString op = act.value("op").toString().trimmed();
+            QString val = act.value("value").toString();
+            if (op.isEmpty()) {
+                appendBubble("AI", "#C2185B", "[操作指令缺少 op，已忽略]", false);
+                continue;
+            }
+            if (!structure.isEmpty() && m_scene) {
+                // 目标结构 ≠ 当前结构时先切换，再执行；相同则省去切换
+                QString cur = QString::fromUtf8(dsv::kindToString(m_scene->kind()));
+                if (structure != cur) {
+                    emit requestJump(structure);
+                    appendBubble("AI", "#0F6E56",
+                                 "[已切换视图] " + structure + "，再执行 " + op, false);
+                }
+            }
+            emit requestRunOperation(op, val);
+            appendBubble("AI", "#0F6E56",
+                         "[执行操作] " + op + (val.isEmpty() ? "" : " " + val), false);
         }
     }
 }
