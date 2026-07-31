@@ -26,7 +26,7 @@ SYSTEM_PROMPT = """你是一个数据结构可视化教学助教，面向正在�
 回答原则：
 1. 优先依据【当前数据结构真实状态】作答——它是屏幕上真实的节点与结构，是最高事实来源；【检索资料】作为原理补充。两者冲突时以真实状态为准。
 2. 严格依据资料与真实状态，不要编造资料/状态以外的知识点或伪造成功/失败案例。
-3. 如果真实状态/检索资料不足以回答，坦诚说明“资料/状态里没讲清楚这部分”，不要硬编。
+3. 如果真实状态/检索资料不足以回答，坦诚说明“根据现有资料，无法回答该问题”，不要硬编。
 4. 用中文，简洁、有结构（必要时用步骤/要点），面向“面试怎么答”讲清原理与触发条件。
 5. 若回答涉及图里的具体节点，在 highlight_nodes 给出这些节点的整数值。
 6. 若某条【检索资料】与用户问题无关，请直接忽略，不要据此作答；不要把不相关的资料当作答案依据，也不要为了凑内容而引用它。
@@ -40,7 +40,54 @@ SYSTEM_PROMPT = """你是一个数据结构可视化教学助教，面向正在�
 JSON_INSTRUCTION = '请只输出 JSON，格式：{"answer": "你的讲解", "highlight_nodes": [涉及的整数节点值...], "sources": ["资料来源文件名..."], "actions": []}。其中 actions 规则：① 用户要求切换结构时填 [{"type":"jump","structure":"结构名"}]；② 用户要求分步/逐步/动画演示时**必须**填 [{"type":"step_explain","structure":"结构名","steps":[...]}]，steps 不能为空，且用户未给数值时你要自行选择典型序列；③ 用户给出明确操作词+数值（如"插入 42""push 5""删除 10"）且未要求分步演示时**必须**填 [{"type":"run_operation","structure":"结构名","op":"insert","value":"42"}]（structure 仅目标结构≠当前时填，op 取值同②，value 无值用空串），用于立刻执行。不需要动作时才留空数组 []。'
 
 
-def build_prompt(question, hits, context):
+def _src_of(h):
+    """兼容 Hit 对象(dict-like metadata) 与纯 dict 两种 hit，取归一化 source。"""
+    m = getattr(h, "metadata", None)
+    if m is None and isinstance(h, dict):
+        m = h.get("metadata", {})
+    return str((m or {}).get("source", "")).replace("\\", "/")
+
+
+def _text_of(h):
+    """兼容 Hit 对象与纯 dict 两种 hit，取 child 文本。"""
+    t = getattr(h, "text", None)
+    if t is None and isinstance(h, dict):
+        t = h.get("text", "")
+    return t or ""
+
+
+def _passage_text(h, source_full=None, parent_index=None, cap=3000, window=1):
+    """Parent-Child：返回喂给主 LLM 的段落文本。
+
+    优先用 parent 窗口——以命中 child 为中心、取同 source 前后各 window 个 ## 段
+    拼接（见 chunks.build_parent_index）。这样既不漏掉同篇相邻段的关键事实，又避免
+    把 2~4 万字整篇文档喂进上下文窗口（旧 build_source_full 从文件头截断，命中段落在
+    后段时模型反而看不到，比单 child 还退步）。回退 source_full 整篇聚合；再回退单 child。
+    """
+    # 1) parent 窗口（推荐）：围绕命中 child 取同 source 前后各 window 段
+    if parent_index:
+        src = _src_of(h)
+        lst = parent_index.get(src)
+        if lst:
+            ht = _text_of(h)
+            try:
+                i = lst.index(ht)
+            except ValueError:
+                i = -1
+            if i >= 0:
+                lo = max(0, i - window)
+                hi = min(len(lst), i + window + 1)
+                return "\n\n".join(lst[lo:hi])[:cap]
+    # 2) 整篇聚合（兼容旧链路 / Judge 场景）
+    if source_full:
+        src = _src_of(h)
+        if src in source_full:
+            return source_full[src][:cap]
+    # 3) 单 child 兜底
+    return _text_of(h)
+
+
+def build_prompt(question, hits, context, source_full=None, parent_index=None):
     if isinstance(context, dict):
         blocks = []
         if context.get("tree_state"):
@@ -58,7 +105,7 @@ def build_prompt(question, hits, context):
     else:
         ctx_text = context if isinstance(context, str) else json.dumps(context, ensure_ascii=False)
     knowledge = "\n\n".join(
-        f"[资料 {i+1} | {h.metadata.get('source','')} | {h.metadata.get('structure','')}]\n{h.text}"
+        f"[资料 {i+1} | {h.metadata.get('source','')} | {h.metadata.get('structure','')}]\n{_passage_text(h, source_full, parent_index)}"
         for i, h in enumerate(hits)
     )
     # 检索质量 → 动态指令（忠实度防线）
@@ -158,7 +205,8 @@ def rewrite_query(question, context=None, api_key="", base_url="", model=""):
         "You are a query rewriter for a data-structure visualization RAG system. "
         "Rewrite the user's question into ONE concise, retrieval-friendly query. "
         "Rules: (1) Normalize colloquial terms to canonical data-structure terminology "
-        "(e.g. 翻转->旋转/rotate, 加->插入/insert, 搞/弄->操作). "
+        "(e.g. 翻转->旋转/rotate, 加->插入/insert, 搞/弄->操作, 满了/踢谁/挤掉->淘汰/evict, "
+        "转来转去->旋转/rotate, 并查集->union-find). "
         "(2) If context provides the current structure or topic, inject it so a "
         "pronoun/ellipsis query becomes concrete (e.g. '这个树的删除' -> 'RedBlackTree delete operation'). "
         "(3) Do NOT invent facts or knowledge beyond what the query and context imply. "
@@ -210,7 +258,7 @@ def _is_arithmetic_only(question):
     return bool(cleaned) and bool(re.fullmatch(r"[\d０-９\.\+\-\*/%=]+", cleaned))
 
 
-def call_llm(question, hits, context, provider="offline", api_key="", base_url="", model=""):
+def call_llm(question, hits, context, provider="offline", api_key="", base_url="", model="", temperature=0.3, source_full=None, parent_index=None):
     # 算术问题拦截：数字是运算数，不是节点值，不应触发高亮或模型计算。
     if _is_arithmetic_only(question):
         return (
@@ -233,7 +281,7 @@ def call_llm(question, hits, context, provider="offline", api_key="", base_url="
             [],
         )
     if provider != "offline" and api_key:
-        ans, hl, src, actions = _call_openai(question, hits, context, api_key, base_url, model)
+        ans, hl, src, actions = _call_openai(question, hits, context, api_key, base_url, model, temperature, source_full, parent_index)
         if not ans.startswith("[LLM 调用失败"):
             return ans, hl, src, actions
         # API 调用失败（key 无效 / 网络不可达 / 参数不支持）→ 降级为离线拼接，至少把检索资料给用户
@@ -278,15 +326,15 @@ def _do_chat_request(payload, api_key, base_url):
             obj.get("actions", []))
 
 
-def _call_openai(question, hits, context, api_key, base_url, model):
-    prompt = build_prompt(question, hits, context)
+def _call_openai(question, hits, context, api_key, base_url, model, temperature=0.3, source_full=None, parent_index=None):
+    prompt = build_prompt(question, hits, context, source_full, parent_index)
     base_payload = {
         "model": model,
         "messages": [
             {"role": "system", "content": SYSTEM_PROMPT},
             {"role": "user", "content": prompt},
         ],
-        "temperature": 0.3,
+        "temperature": temperature,
     }
     # 优先带 JSON 模式；若 DashScope 因 response_format 参数拒绝（部分模型/chat 端点不支持），
     # 自动去掉该参数重试（prompt 已强约束只输出 JSON，且 _parse_content 会剥离 ```json 围栏）。

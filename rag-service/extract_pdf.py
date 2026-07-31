@@ -1,4 +1,23 @@
-"""从《Open Data Structures》(DataBook.pdf) 抽取每页文本为 Markdown 片段，
+"""【已废弃，请改用 extract_pdf_plumber.py】
+
+保留此文件仅为记录旧口径。产出的 data/open/ 已从 chunks.SUBDIRS 移除，不再进入检索。
+
+废弃原因（四条，都是实测出来的）：
+1. 按物理页切分：一节被拦腰截断，一页里可能塞进两个不相干小节，检索命中的片段
+   常常缺上下文或混入无关内容。
+2. PyPDF2 提取丢空格：`operationssupportedbytheQueueinterfaceare`，
+   TF-IDF 关键词路分不出词基本失效（pdfplumber + x_tolerance=1.0 可修，
+   空格占比 0.056 -> 0.151）。
+3. 页眉 `Interfaces §1.2` 与页码混进正文。
+4. `structure:` 一律留空 -> 323 个页片段对任何数据结构的查询都可召回，
+   是 precision 偏低的主要噪声源。
+
+替代方案见 extract_pdf_plumber.py：用 PDF 自带的 148 条书签做语义切分，
+一个文件 = 原书的一个 level2 节（parent），文件内 ## = level3 小节（child）。
+
+---- 以下为原始说明 ----
+
+从《Open Data Structures》(DataBook.pdf) 抽取每页文本为 Markdown 片段，
 作为 RAG 的通用知识库（放入 data/open/，structure 留空 → 任意数据结构演示时均可召回）。
 
 关键点：原书是英文，而用户常用中文提问。纯英文词无法与中文查询命中，

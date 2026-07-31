@@ -8,6 +8,11 @@ import json
 import urllib.request
 import urllib.error
 
+# 语料目录清单与 chunks.load_chunks 共用同一份定义，避免这里漏掉新增目录
+# （曾经四处硬编码 ("interview","notes","generated","open","knowledge")，
+# 新增 book/ 时极易漏改导致索引不刷新）。chunks 只依赖 stdlib，无循环导入。
+from chunks import SUBDIRS
+
 # 相关性阈值：chroma/semantic 的余弦相似度 >= 此值才视为"有相关命中"。
 # 用于让 q_match 在向量检索路径上也是真实信号（原先硬编码 True，
 # 导致 llm.py 的空检索硬拒闸门在 chroma 下永不触发）。
@@ -62,13 +67,39 @@ _SYNONYMS = {
     "加": ["插入", "insert"],
     "加入": ["插入", "insert"],
     "添加": ["插入", "insert"],
-    "插入": ["旋转", "加"],
+    "插入": ["insert"],
     "左旋": ["旋转", "翻转", "rotate"],
     "右旋": ["旋转", "翻转", "rotate"],
     "双旋": ["旋转", "翻转", "rotate"],
     "叔叔": ["叔节点", "uncle"],
     "红红": ["红红冲突", "recolor"],
-    "重新着色": ["recolor", "旋转"],
+    "重新着色": ["recolor"],
+
+    # —— 口语/ colloquial 归一（治规律①：口语查询 Faithfulness 显著偏低）——
+    "满了": ["淘汰", "evict", "溢出", "满"],
+    "满了怎么办": ["淘汰", "evict", "溢出"],
+    "踢谁": ["淘汰", "evict", "移除"],
+    "踢出去": ["淘汰", "evict"],
+    "挤掉": ["淘汰", "evict"],
+    "丢谁": ["淘汰", "evict", "移除"],
+    "淘汰": ["evict", "移除", "满"],
+    "转来转去": ["旋转", "rotate"],
+    "转一下": ["旋转", "rotate"],
+    "左旋右旋": ["旋转", "rotate", "左旋", "右旋"],
+    "搞": ["操作", "插入", "删除"],
+    "弄": ["操作"],
+    "整": ["操作"],
+    "怎么读": ["遍历", "traverse"],
+    "怎么走": ["遍历", "traverse"],
+    "挂了": ["删除", "delete"],
+    "崩了": ["删除", "delete", "移除"],
+    "双端": ["deque", "两端"],
+    "两端": ["deque", "双端"],
+    "阻塞": ["blocking", "满", "空", "等待"],
+    "并查集": ["union-find", "disjoint", "ufds", "dsu"],
+    "查集": ["union-find", "ufds", "dsu"],
+    "最小生成树": ["mst", "kruskal", "prim"],
+    "生成树": ["mst", "kruskal", "prim"],
 }
 
 
@@ -142,6 +173,14 @@ class BaseRetriever:
     def add(self, chunks):
         raise NotImplementedError
 
+    def sync(self, rechunk, remove):
+        """增量更新：rechunk={doc_id:[chunk,...]} 需重切重嵌，remove={doc_id:[chunk_id,...]} 需清旧向量。
+
+        默认实现直接报错，由各子类覆盖。语义/向量后端靠 chunk 的「稳定 id」定位旧向量，
+        只动变化文档，不变文档不重嵌（省 DashScope API 调用）。详见 doc_index.compute_sync_plan。
+        """
+        raise NotImplementedError
+
     def query(self, text, k=4, structure=None):
         raise NotImplementedError
 
@@ -166,12 +205,26 @@ class NaiveRetriever(BaseRetriever):
 
     def __init__(self):
         self.docs = []   # list of (terms_set, text, metadata)
+        self._cids = []  # 与 docs 平行的稳定 chunk id（sanitize(source)+"_"+i）
         self._df = {}    # term -> document frequency
         self._N = 0
 
     def add(self, chunks):
-        for c in chunks:
+        self.docs = [(c["terms"], c["text"], c["metadata"]) for c in chunks]
+        self._cids = [c["id"] for c in chunks]
+        self._build_df()
+
+    def sync(self, rechunk, remove):
+        """增量：清掉 remove 里的旧 chunk 向量，追加 rechunk 里的新 chunk。"""
+        removed = set()
+        for ids in remove.values():
+            removed.update(ids)
+        kept = [(d, cid) for d, cid in zip(self.docs, self._cids) if cid not in removed]
+        self.docs = [d for d, _ in kept]
+        self._cids = [c for _, c in kept]
+        for c in (ch for chunks in rechunk.values() for ch in chunks):
             self.docs.append((c["terms"], c["text"], c["metadata"]))
+            self._cids.append(c["id"])
         self._build_df()
 
     def _build_df(self):
@@ -250,7 +303,8 @@ class NaiveRetriever(BaseRetriever):
 
     def save(self, path):
         with open(path, "wb") as f:
-            pickle.dump({"docs": self.docs, "df": self._df, "N": self._N}, f)
+            pickle.dump({"docs": self.docs, "df": self._df,
+                         "N": self._N, "cids": self._cids}, f)
 
     def load(self, path):
         with open(path, "rb") as f:
@@ -259,10 +313,23 @@ class NaiveRetriever(BaseRetriever):
             self.docs = obj["docs"]
             self._df = obj.get("df", {})
             self._N = obj.get("N", len(self.docs))
+            if "cids" in obj:
+                self._cids = obj["cids"]
+            else:
+                # 兼容旧格式：用 metadata.source + 文件内顺序重建 id（与 chunk_file 规则一致）
+                from chunks import sanitize_id
+                seen = {}
+                cids = []
+                for _terms, _text, meta in self.docs:
+                    src = str(meta.get("source", "")).replace("\\", "/")
+                    seen[src] = seen.get(src, -1) + 1
+                    cids.append(sanitize_id(src) + "_" + str(seen[src]))
+                self._cids = cids
         else:
             # 兼容旧格式（仅存 docs 列表）
             self.docs = obj
             self._build_df()
+            self._cids = []
 
     def count(self):
         return len(self.docs)
@@ -296,10 +363,11 @@ class SemanticRetriever(BaseRetriever):
         self._cache_path = cache_path or os.path.join(
             os.path.dirname(os.path.abspath(__file__)), "semantic_index.pkl"
         )
-        # 内存态：docs(text,meta) / vecs / structs
+        # 内存态：docs(text,meta) / vecs / structs / ids
         self._docs = []
         self._vecs = []
         self._structs = []
+        self._ids = []   # 与 docs 平行的稳定 chunk id，增量 sync 靠它定位旧向量
         self._dim = None  # 向量维度，由探针/首次成功嵌入确定，用于单条失败时的零向量对齐
         self._try_load()
 
@@ -367,7 +435,7 @@ class SemanticRetriever(BaseRetriever):
         cache_mtime = os.path.getmtime(self._cache_path)
         if not self._data_dir:
             return False
-        for sub in ("interview", "notes", "generated", "open", "knowledge"):
+        for sub in SUBDIRS:
             d = os.path.join(self._data_dir, sub)
             if not os.path.isdir(d):
                 continue
@@ -386,9 +454,10 @@ class SemanticRetriever(BaseRetriever):
             self._vecs = obj["vecs"]
             self._structs = obj.get("structs",
                                     [m.get("structure", "") for _, m in self._docs])
+            self._ids = obj.get("ids", [""] * len(self._docs))
         except Exception:
             # 缓存损坏则作废，交给 add() 重建
-            self._docs, self._vecs, self._structs = [], [], []
+            self._docs, self._vecs, self._structs, self._ids = [], [], [], []
 
     def _calibrate_batch(self, texts):
         """用真实文档（取最长的若干篇）二分确定 DashScope 单次能接受的最大批大小。
@@ -419,6 +488,7 @@ class SemanticRetriever(BaseRetriever):
             return
         self._docs = [(c["text"], c["metadata"]) for c in chunks]
         self._structs = [c["metadata"].get("structure", "") for c in chunks]
+        self._ids = [c["id"] for c in chunks]
         texts = [d[0] for d in self._docs]
         # 先做一次性连通性/鉴权探针（短超时），避免 17 批全卡在慢网络上无反馈：
         # 若 DashScope 不可达 / key 错 / 模型名错，这里会在 ~30s 内快速失败并给出明确原因，
@@ -442,9 +512,35 @@ class SemanticRetriever(BaseRetriever):
     def _save(self):
         with open(self._cache_path, "wb") as f:
             pickle.dump(
-                {"docs": self._docs, "vecs": self._vecs, "structs": self._structs},
+                {"docs": self._docs, "vecs": self._vecs,
+                 "structs": self._structs, "ids": self._ids},
                 f,
             )
+
+    def sync(self, rechunk, remove):
+        """增量：删 remove 里的旧 chunk 向量，重嵌 rechunk 里的新 chunk（只耗变更部分 API）。"""
+        removed = set()
+        for ids in remove.values():
+            removed.update(ids)
+        keep = [(d, v, s, i) for d, v, s, i in
+                zip(self._docs, self._vecs, self._structs, self._ids)
+                if i not in removed]
+        if keep:
+            self._docs, self._vecs, self._structs, self._ids = map(list, zip(*keep))
+        else:
+            self._docs, self._vecs, self._structs, self._ids = [], [], [], []
+        new = [c for chunks in rechunk.values() for c in chunks]
+        if new:
+            # 首次成功嵌入后 _dim 已定；若仅从缓存加载未设 _dim，用现有向量维补上
+            if self._dim is None and self._vecs:
+                self._dim = len(self._vecs[0])
+            texts = [c["text"] for c in new]
+            vecs = self._embed(texts)
+            self._docs += [(c["text"], c["metadata"]) for c in new]
+            self._vecs += vecs
+            self._structs += [c["metadata"].get("structure", "") for c in new]
+            self._ids += [c["id"] for c in new]
+        self._save()
 
     def count(self):
         return len(self._docs)
@@ -598,7 +694,7 @@ class ChromaRetriever(BaseRetriever):
         mt = 0.0
         if not self._data_dir:
             return mt
-        for sub in ("interview", "notes", "generated", "open", "knowledge"):
+        for sub in SUBDIRS:
             d = os.path.join(self._data_dir, sub)
             if not os.path.isdir(d):
                 continue
@@ -633,7 +729,7 @@ class ChromaRetriever(BaseRetriever):
                 old_ids = []
             if old_ids:
                 self._coll.delete(ids=old_ids)
-        ids = [f"c{i}" for i in range(len(chunks))]
+        ids = [c["id"] for c in chunks]   # 用稳定 chunk id 作 chroma id（sanitized，满足 [A-Za-z0-9_-]）
         docs = [c["text"] for c in chunks]
         metas = []
         for c in chunks:
@@ -647,6 +743,25 @@ class ChromaRetriever(BaseRetriever):
         self._coll.add(ids=ids, documents=docs, embeddings=vecs, metadatas=metas)
         self._coll.modify(metadata={"data_mtime": self._data_mtime()})
         print(f"built chroma index via {self._model} ({self._coll.count()} docs)", flush=True)
+
+    def sync(self, rechunk, remove):
+        """增量：chroma 原生支持按 id 删/加，只动变化文档。"""
+        removed = [cid for ids in remove.values() for cid in ids]
+        if removed:
+            # chromadb 1.5.x 不允许 delete(ids=[]) 空列表，先判空
+            self._coll.delete(ids=removed)
+        new = [c for chunks in rechunk.values() for c in chunks]
+        if new:
+            ids = [c["id"] for c in new]
+            docs = [c["text"] for c in new]
+            metas = []
+            for c in new:
+                m = {k: ("" if v is None else v) for k, v in c["metadata"].items()}
+                m["structure"] = m.get("structure", "") or ""
+                metas.append(m)
+            vecs = self._embed_texts(docs)
+            self._coll.add(ids=ids, documents=docs, embeddings=vecs, metadatas=metas)
+            print(f"  [chroma sync] +{len(new)} -{len(removed)} docs", flush=True)
 
     def count(self):
         try:

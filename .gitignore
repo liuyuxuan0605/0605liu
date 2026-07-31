@@ -26,6 +26,7 @@ src/ai/release/
 rag-service/naive_index.pkl
 rag-service/.env
 rag-service/chroma_db/
+rag-service/data/.doc_index.json
 *.pkl
 
 # === 说明：rag-service/data/ 知识库语料（含讲解 .md）已按用户要求纳入版本库，不再排除 ===

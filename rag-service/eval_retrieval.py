@@ -25,7 +25,7 @@ import argparse
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from chunks import load_chunks
+from chunks import load_chunks, SUBDIRS
 from retriever import build_retriever, NaiveRetriever
 from config import (
     RETRIEVER, OPENAI_API_KEY, OPENAI_BASE_URL, OPENAI_MODEL,
@@ -53,7 +53,7 @@ def _naive_stale():
     if not os.path.exists(INDEX_PATH):
         return True
     pk_mtime = os.path.getmtime(INDEX_PATH)
-    for sub in ("interview", "notes", "generated", "open", "knowledge"):
+    for sub in SUBDIRS:
         d = os.path.join(DATA_DIR, sub)
         if not os.path.isdir(d):
             continue

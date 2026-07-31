@@ -1,5 +1,5 @@
 ---
-structure: 
+structure: AVLTree
 kind: theory
 operation: mixed
 phase: concept

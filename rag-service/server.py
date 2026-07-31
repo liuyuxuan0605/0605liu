@@ -8,12 +8,15 @@ import json
 import os
 import sys
 import glob
+import time
+import threading
 import traceback
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from chunks import load_chunks
-from retriever import NaiveRetriever, build_retriever, _dedup_by_source
+from chunks import load_chunks, build_source_full, build_parent_index, SUBDIRS
+from retriever import NaiveRetriever, build_retriever, _dedup_by_source, _expand_terms, _terms
+from doc_index import load_manifest, compute_sync_plan, save_manifest
 from llm import call_llm, rewrite_query
 from config import (
     RETRIEVER, LLM_PROVIDER, OPENAI_API_KEY, OPENAI_BASE_URL, OPENAI_MODEL,
@@ -25,7 +28,7 @@ def _index_is_stale():
     if not os.path.exists(INDEX_PATH):
         return True
     pk_mtime = os.path.getmtime(INDEX_PATH)
-    for sub in ("interview", "notes", "generated", "open", "knowledge"):
+    for sub in SUBDIRS:
         d = os.path.join(DATA_DIR, sub)
         if not os.path.isdir(d):
             continue
@@ -37,35 +40,58 @@ def _index_is_stale():
 
 print("building retriever ...", flush=True)
 _chunks = load_chunks(DATA_DIR)
+# Parent-Child：把每篇 source 的所有 child chunk 聚合成整篇，作为喂给 LLM 的
+# parent 上下文。检索仍用 child（向量/关键词精度高），阅读用整篇（少漏事实）。
+SOURCE_FULL = build_source_full(_chunks)          # 兜底 / 兼容用整篇
+PARENT_INDEX = build_parent_index(_chunks)        # 主 LLM 用「命中段窗口」，防大文件喂爆上下文
+
+
+def _index_retriever(retriever, chunks, plan, first_run):
+    """对单个 retriever 做「首次全量 / 后续增量」。
+
+    - naive：pickle 缓存未过期就 load（快、零 API）；过期则全量 add；
+      非首次且有变化再 sync 增量（轮询路径走这条，不重建）。
+    - 语义/向量：add() 内部已判缓存是否过期（加载或全量嵌入），不调 add 就永远不重建；
+      非首次且有变化再 sync（只重嵌变更文档，省 DashScope API）。
+    """
+    if isinstance(retriever, NaiveRetriever):
+        if os.path.exists(INDEX_PATH) and not _index_is_stale():
+            retriever.load(INDEX_PATH)
+            if not first_run and (plan["rechunk"] or plan["remove"]):
+                retriever.sync(plan["rechunk"], plan["remove"])
+                retriever.save(INDEX_PATH)
+        else:
+            retriever.add(chunks)
+            retriever.save(INDEX_PATH)
+    else:
+        retriever.add(chunks)  # 内部判缓存：未过期则复用，不重复嵌入
+        if not first_run and (plan["rechunk"] or plan["remove"]):
+            retriever.sync(plan["rechunk"], plan["remove"])
+
+
+# —— 增量索引：用 manifest（doc_id→{mtime,hash,chunk_ids}）对比 data/ 变化 ——
+# mtime 粗筛（没变直接跳过），变了才算 sha256 精判；真正变化的文档才重切重嵌。
+_manifest = load_manifest(DATA_DIR)
+_plan = compute_sync_plan(DATA_DIR, _manifest)
+_first_run = not _manifest
+_n_rechunk = sum(len(v) for v in _plan["rechunk"].values())
+_n_remove = sum(len(v) for v in _plan["remove"].values())
+print(f"[index] {'首次全量构建' if _first_run else '增量检查'}："
+      f"待重切文档 {len(_plan['rechunk'])}（{_n_rechunk} chunk），待删除 {_n_remove} chunk",
+      flush=True)
+
 try:
     _retriever = build_retriever(
         RETRIEVER, EMBEDDING_MODEL,
         api_key=OPENAI_API_KEY, base_url=OPENAI_BASE_URL, data_dir=DATA_DIR,
         chat_model=OPENAI_MODEL,
     )
-    if isinstance(_retriever, NaiveRetriever):
-        if os.path.exists(INDEX_PATH) and not _index_is_stale():
-            _retriever.load(INDEX_PATH)
-            print(f"loaded naive index ({len(_retriever.docs)} docs)", flush=True)
-        else:
-            _retriever.add(_chunks)
-            _retriever.save(INDEX_PATH)
-            print(f"rebuilt naive index ({len(_retriever.docs)} docs)", flush=True)
-    else:
-        # 语义/向量检索：把「是否重建」的判断完全交给 retriever.add()。
-        # ⚠️ 不能用 count()>0 直接复用——ChromaRetriever 的过期检测（拿 collection
-        # 里存的 data_mtime 和当前语料 mtime 比较）写在 add() 内部，若不调用 add()，
-        # 新增/修改的语料（如 theory 知识文档）永远不会触发重建，表现就是「还是 538 条」。
-        _retriever.add(_chunks)
+    _index_retriever(_retriever, _chunks, _plan, _first_run)
 except Exception as e:  # noqa: BLE001
     # 语义/向量检索失败（如 key 无效 / 网络不可达 / 嵌入函数不兼容），降级为关键词检索，保证服务可用
     print(f"[WARN] {RETRIEVER} 检索构建失败（{e}），降级为 naive 关键词检索", flush=True)
     _retriever = NaiveRetriever()
-    if os.path.exists(INDEX_PATH) and not _index_is_stale():
-        _retriever.load(INDEX_PATH)
-    else:
-        _retriever.add(_chunks)
-        _retriever.save(INDEX_PATH)
+    _index_retriever(_retriever, _chunks, _plan, _first_run)
 print(f"retriever={RETRIEVER} llm={LLM_PROVIDER} embedding={EMBEDDING_MODEL}", flush=True)
 
 # ---- hybrid 检索：向量路(_retriever) + 关键词路(_kw, TF-IDF) 经 RRF 合并 ----
@@ -79,16 +105,37 @@ if isinstance(_retriever, NaiveRetriever):
 else:
     try:
         _kw = NaiveRetriever()
-        if os.path.exists(INDEX_PATH) and not _index_is_stale():
-            _kw.load(INDEX_PATH)
-            print(f"[hybrid] loaded keyword index ({len(_kw.docs)} docs)", flush=True)
-        else:
-            _kw.add(_chunks)
-            _kw.save(INDEX_PATH)
-            print(f"[hybrid] built keyword index ({len(_kw.docs)} docs)", flush=True)
+        _index_retriever(_kw, _chunks, _plan, _first_run)
+        print(f"[hybrid] built keyword index ({len(_kw.docs)} docs)", flush=True)
     except Exception as e:  # noqa: BLE001
         print(f"[WARN] 关键词路构建失败，退回纯向量检索: {e}", flush=True)
         _kw = None
+
+# manifest 落地：首次运行把当前 chunk_ids 记下来；后续每次 sync 后也更新
+save_manifest(DATA_DIR, _plan["new_manifest"])
+
+
+# ---- 后台轮询：每 30s 检测 data/ 变化并增量 sync（实现「轮询检测」）----
+def _poll_loop():
+    while True:
+        time.sleep(30)
+        try:
+            m = load_manifest(DATA_DIR)
+            p = compute_sync_plan(DATA_DIR, m)
+            if p["rechunk"] or p["remove"]:
+                _retriever.sync(p["rechunk"], p["remove"])
+                if _kw is not _retriever and _kw is not None:
+                    _kw.sync(p["rechunk"], p["remove"])
+                save_manifest(DATA_DIR, p["new_manifest"])
+                added = sum(len(v) for v in p["rechunk"].values())
+                removed = sum(len(v) for v in p["remove"].values())
+                print(f"[poll] 增量同步完成：+{added} chunk / -{removed} chunk", flush=True)
+        except Exception as e:  # noqa: BLE001
+            print(f"[poll] 同步异常（忽略，30s 后重试）: {e}", flush=True)
+
+
+_poll_thread = threading.Thread(target=_poll_loop, daemon=True)
+_poll_thread.start()
 
 RRF_K = 60
 
@@ -147,6 +194,32 @@ def hybrid_search(question, k=5, structure=None, context=None):
                     seen.add(key)
                     order.append((key, h))
     order.sort(key=lambda kv: -fused[kv[0]])
+    # —— 规则式 rerank（无 key 可跑）：用 query 的「规范化概念词」与正文重叠度二次重排，抬 Precision。
+    # 只取 ascii/长 token 作为信号（即同义词引入的 evict/rotate/union-find/deque/mst 等规范术语）；
+    # 中文按单字太碎、重叠不可靠，留给 RRF 主排序。qsig 为空（纯中文无规范词）时 rerank 退化为
+    # 恒等，不影响原排序，安全。fused 分乘以 (1 + 0.8*overlap) 让高重叠的相关文档压过同分段噪声。
+    qterms = _expand_terms(question)
+    qsig = {t for t in qterms if any(c.isascii() for c in t) and len(t) > 1}
+    scored = []
+    for key, h in order:
+        htext = getattr(h, "text", "") or ""
+        dsig = {t for t in _terms(htext) if any(c.isascii() for c in t) and len(t) > 1}
+        if qsig:
+            inter = qsig & dsig
+            # 前缀兜底：evict 也能命中 evicts/eviction，rotate 命中 rotated/rotation 等，
+            # 避免整词切分把复数/分词挡在门外导致 rerank 漏判。
+            for q in qsig:
+                if len(q) >= 4:
+                    for d in dsig:
+                        if d.startswith(q) or q.startswith(d):
+                            inter.add(q)
+                            break
+            overlap = len(inter) / max(1, len(qsig))
+        else:
+            overlap = 0.0
+        scored.append((key, h, fused[key] * (1.0 + 0.8 * overlap)))
+    scored.sort(key=lambda x: -x[2])
+    order = [(k, h) for k, h, _ in scored]
     merged = [h for _, h in order[: max(k * 3, 20)]]
     return _dedup_by_source(merged, k)
 
@@ -160,7 +233,8 @@ def answer(question, context):
     structure = context.get("structure", "") if isinstance(context, dict) else ""
     hits = hybrid_search(question, k=5, structure=structure or None, context=context)
     ans, hl, src, actions = call_llm(
-        question, hits, context, LLM_PROVIDER, OPENAI_API_KEY, OPENAI_BASE_URL, OPENAI_MODEL
+        question, hits, context, LLM_PROVIDER, OPENAI_API_KEY, OPENAI_BASE_URL, OPENAI_MODEL,
+        source_full=SOURCE_FULL, parent_index=PARENT_INDEX,
     )
     return {"answer": ans, "highlight_nodes": hl, "sources": src, "actions": actions}
 
