@@ -11,7 +11,7 @@ import urllib.error
 # 语料目录清单与 chunks.load_chunks 共用同一份定义，避免这里漏掉新增目录
 # （曾经四处硬编码 ("interview","notes","generated","open","knowledge")，
 # 新增 book/ 时极易漏改导致索引不刷新）。chunks 只依赖 stdlib，无循环导入。
-from chunks import SUBDIRS
+from chunks import SUBDIRS, subdirs_signature
 
 # 相关性阈值：chroma/semantic 的余弦相似度 >= 此值才视为"有相关命中"。
 # 用于让 q_match 在向量检索路径上也是真实信号（原先硬编码 True，
@@ -170,7 +170,15 @@ def _translate_to_english(text, api_key, base_url, chat_model):
 
 
 class BaseRetriever:
-    def add(self, chunks):
+    def add(self, chunks, force=False):
+        """全量装载（或复用未失效的缓存）。
+
+        返回 True = 真的执行了全量重建；False = 复用了已有缓存。
+        调用方据此决定要不要接着跑 sync(plan)：已经全量重建过的索引就是最新的，
+        再 sync 一遍纯属重复嵌入、白烧 API。
+
+        force=True 时无视缓存强制重建（manifest 丢失等无法确认索引口径的场景）。
+        """
         raise NotImplementedError
 
     def sync(self, rechunk, remove):
@@ -192,27 +200,42 @@ class BaseRetriever:
         raise NotImplementedError
 
     def load(self, path):
+        """从磁盘恢复索引。
+
+        返回 True=缓存可用；False=缓存口径已失效（如语料目录集 SUBDIRS 变了），
+        调用方必须改走 add() 重建，不能直接使用。
+        """
         raise NotImplementedError
 
 
 class NaiveRetriever(BaseRetriever):
-    """纯标准库 TF-IDF 风格打分 + pickle 持久化，无需任何第三方依赖。
+    """纯标准库 Okapi BM25 打分 + pickle 持久化，无需任何第三方依赖。
 
-    IDF 加权：稀有词（红黑树 / 着色 / 旋转 / 哈希 …）权重高，
-    超高频字（的 / 是 / 数据 / 节点 …）权重≈0，避免通用文档靠
-    共享常用字胜出，让真正相关的专业文档排到前面。
+    相比原 TF-IDF 风格（仅 IDF 加权集合重叠），BM25 引入了：
+    - 文档长度归一：长文档不再仅靠"包含更多不同词"蹭分，短而精的命中文档
+      得到相对提升（解决超长《面试逐字稿》当万能兜底的问题）；
+    - BM25 标准 IDF 形状（超高频词可得负 IDF，标准行为）。
+    注：入库 terms 已去重，故词频 tf 实际为二值（出现/不出现），BM25 在此
+    主要表现为「文档长度归一」收益；文档长度用去重词数 len(terms) 度量。
+    若需完整 tf 饱和，需把入库 terms 改为保留重复的 token 列表。
     """
 
     def __init__(self):
         self.docs = []   # list of (terms_set, text, metadata)
         self._cids = []  # 与 docs 平行的稳定 chunk id（sanitize(source)+"_"+i）
         self._df = {}    # term -> document frequency
+        self._dl = []    # 与 docs 平行的文档长度（去重词数，BM25 长度归一用）
+        self._avgdl = 0.0
         self._N = 0
+        self._k1 = 1.5
+        self._b = 0.75
 
-    def add(self, chunks):
+    def add(self, chunks, force=False):
+        """全量装载。naive 路纯本地计算、零 API 成本，故不做缓存复用，总是重建。"""
         self.docs = [(c["terms"], c["text"], c["metadata"]) for c in chunks]
         self._cids = [c["id"] for c in chunks]
-        self._build_df()
+        self._build_stats()
+        return True
 
     def sync(self, rechunk, remove):
         """增量：清掉 remove 里的旧 chunk 向量，追加 rechunk 里的新 chunk。"""
@@ -225,19 +248,25 @@ class NaiveRetriever(BaseRetriever):
         for c in (ch for chunks in rechunk.values() for ch in chunks):
             self.docs.append((c["terms"], c["text"], c["metadata"]))
             self._cids.append(c["id"])
-        self._build_df()
+        self._build_stats()
 
-    def _build_df(self):
+    def _build_stats(self):
+        """重建 BM25 所需的统计量：df / 文档长度 / 平均长度。"""
         self._N = len(self.docs)
         df = {}
+        dl = []
         for terms, _, _ in self.docs:
             for t in terms:
                 df[t] = df.get(t, 0) + 1
+            dl.append(len(terms))
         self._df = df
+        self._dl = dl
+        self._avgdl = (sum(dl) / len(dl)) if dl else 0.0
 
     def _idf(self, t):
-        # 平滑 IDF：越稀有的词权重越大
-        return math.log((self._N + 1) / (self._df.get(t, 0) + 1)) + 1.0
+        # Okapi BM25 IDF：越稀有的词权重越大；超高频词可得到负的 IDF（标准行为）
+        df = self._df.get(t, 0)
+        return math.log((self._N - df + 0.5) / (df + 0.5))
 
     def query(self, text, k=4, structure=None):
         q = _expand_terms(text)
@@ -245,7 +274,7 @@ class NaiveRetriever(BaseRetriever):
 
         def _score(filter_struct, topn=k):
             scored = []
-            for terms, txt, meta in self.docs:
+            for i, (terms, txt, meta) in enumerate(self.docs):
                 sm = meta.get("structure", "")
                 # 元数据未声明结构类型的文档，视为可匹配任意结构
                 if filter_struct and sm and sm != filter_struct:
@@ -253,8 +282,17 @@ class NaiveRetriever(BaseRetriever):
                 inter = q & terms
                 if not inter:
                     continue
-                # IDF 加权求和
-                score = sum(self._idf(t) for t in inter)
+                # Okapi BM25 打分（词频饱和 + 文档长度归一；terms 已去重故 tf=1）
+                dl = self._dl[i]
+                avgdl = self._avgdl
+                score = 0.0
+                for t in inter:
+                    idf = self._idf(t)
+                    if avgdl > 0:
+                        denom = 1.0 + self._k1 * (1.0 - self._b + self._b * (dl / avgdl))
+                    else:
+                        denom = 1.0 + self._k1
+                    score += idf * (self._k1 + 1.0) / denom
                 # 来源加权：
                 # - 面试口语笔记（interview/）含大量常见中文词，容易蹭分胜出，
                 #   进一步降权，避免它盖过更专业的文档；
@@ -303,15 +341,23 @@ class NaiveRetriever(BaseRetriever):
 
     def save(self, path):
         with open(path, "wb") as f:
-            pickle.dump({"docs": self.docs, "df": self._df,
-                         "N": self._N, "cids": self._cids}, f)
+            pickle.dump({"docs": self.docs, "N": self._N, "cids": self._cids,
+                         "subdirs": subdirs_signature()}, f)
 
     def load(self, path):
+        """从 pickle 恢复索引。返回 True=可用；False=口径已变，调用方需重建。
+
+        语料目录集（SUBDIRS）变化时**不能**复用旧索引：隐藏 book/ 只改常量、
+        不动文件 mtime，按 mtime 判过期会误判「未过期」而复用含 book/ 的旧索引。
+        """
         with open(path, "rb") as f:
             obj = pickle.load(f)
         if isinstance(obj, dict):
+            if obj.get("subdirs") != subdirs_signature():
+                # 目录集变了（或旧格式无此字段）→ 作废，交给 add() 重建
+                self.docs, self._df, self._N, self._cids = [], {}, 0, []
+                return False
             self.docs = obj["docs"]
-            self._df = obj.get("df", {})
             self._N = obj.get("N", len(self.docs))
             if "cids" in obj:
                 self._cids = obj["cids"]
@@ -325,11 +371,12 @@ class NaiveRetriever(BaseRetriever):
                     seen[src] = seen.get(src, -1) + 1
                     cids.append(sanitize_id(src) + "_" + str(seen[src]))
                 self._cids = cids
-        else:
-            # 兼容旧格式（仅存 docs 列表）
-            self.docs = obj
-            self._build_df()
-            self._cids = []
+            # 从 docs 文本重算 df/文档长度/avgdl（BM25 统计量不落盘，避免版本漂移）
+            self._build_stats()
+            return True
+        # 旧格式（仅存 docs 列表）：无从判断其语料目录集口径，一律作废重建
+        self.docs, self._df, self._N, self._cids = [], {}, 0, []
+        return False
 
     def count(self):
         return len(self.docs)
@@ -429,27 +476,24 @@ class SemanticRetriever(BaseRetriever):
             return self._embed_with_fallback(batch[:mid]) + self._embed_with_fallback(batch[mid:])
 
     # ---------- 索引 / 缓存 ----------
-    def _cache_is_stale(self):
-        if not os.path.exists(self._cache_path):
-            return True
-        cache_mtime = os.path.getmtime(self._cache_path)
-        if not self._data_dir:
-            return False
-        for sub in SUBDIRS:
-            d = os.path.join(self._data_dir, sub)
-            if not os.path.isdir(d):
-                continue
-            for fp in glob.glob(os.path.join(d, "*.md")):
-                if os.path.getmtime(fp) > cache_mtime:
-                    return True
-        return False
+    # 这里曾有一个 _cache_is_stale()：只要 data/ 下任意 .md 比缓存文件新，就判整个
+    # 缓存过期 → 全量重嵌。它会**抢在 manifest 之前把整库判死**，导致 doc_index 那套
+    # 增量在启动路径上完全失效（改一个 md、重启一次 = 整库重嵌，白烧 DashScope API）。
+    # 现已删除：「哪些文档需要更新」由 doc_index.compute_sync_plan 精确决定，
+    # mtime 只在它内部承担粗筛职责，不再作为「全量重建」的触发条件。
+    # 缓存能否复用只看两点：文件在不在、语料目录集签名对不对（见 _try_load）。
 
     def _try_load(self):
-        if not os.path.exists(self._cache_path) or self._cache_is_stale():
+        if not os.path.exists(self._cache_path):
             return
         try:
             with open(self._cache_path, "rb") as f:
                 obj = pickle.load(f)
+            if obj.get("subdirs") != subdirs_signature():
+                # 语料目录集变了（如隐藏英文 book/）：mtime 没动，但索引口径已不同，
+                # 复用会留下孤儿向量 → 作废缓存，交给 add() 重建
+                self._docs, self._vecs, self._structs, self._ids = [], [], [], []
+                return
             self._docs = obj["docs"]
             self._vecs = obj["vecs"]
             self._structs = obj.get("structs",
@@ -481,11 +525,12 @@ class SemanticRetriever(BaseRetriever):
                 hi = mid - 1
         return max(1, best)
 
-    def add(self, chunks):
-        # 若 __init__ 已加载未过期的 pickle 缓存，直接复用，避免每次启动重复调 API 嵌入
-        if self._docs and not self._cache_is_stale():
+    def add(self, chunks, force=False):
+        # 若 __init__ 已加载到有效缓存（文件存在 + 目录集签名一致），直接复用，
+        # 避免每次启动重复调 API 嵌入。语料的实际变更交给 sync(plan) 增量处理。
+        if not force and self._docs:
             print(f"reused semantic cache ({len(self._docs)} docs)", flush=True)
-            return
+            return False
         self._docs = [(c["text"], c["metadata"]) for c in chunks]
         self._structs = [c["metadata"].get("structure", "") for c in chunks]
         self._ids = [c["id"] for c in chunks]
@@ -508,12 +553,14 @@ class SemanticRetriever(BaseRetriever):
         self._vecs = self._embed(texts)
         self._save()
         print(f"built semantic index via {self._model} ({len(self._docs)} docs)", flush=True)
+        return True
 
     def _save(self):
         with open(self._cache_path, "wb") as f:
             pickle.dump(
                 {"docs": self._docs, "vecs": self._vecs,
-                 "structs": self._structs, "ids": self._ids},
+                 "structs": self._structs, "ids": self._ids,
+                 "subdirs": subdirs_signature()},
                 f,
             )
 
@@ -703,7 +750,7 @@ class ChromaRetriever(BaseRetriever):
         return mt
 
     # ---------- 索引 / 持久化 ----------
-    def add(self, chunks):
+    def add(self, chunks, force=False):
         # 连通性探针（短超时），key 错/不可达时快速失败，交由 server.py 降级
         try:
             print("chroma 嵌入连通性探针(15s)...", flush=True)
@@ -716,10 +763,18 @@ class ChromaRetriever(BaseRetriever):
                 f"及 DashScope 可达性: {e}"
             )
         cur = self._coll.count()
-        stale = abs((self._coll.metadata or {}).get("data_mtime", 0.0) - self._data_mtime()) > 1
-        if cur > 0 and not stale:
+        _meta = self._coll.metadata or {}
+        # 复用判定**只看语料目录集签名**。
+        # 这里原本还有一条「有 .md 比索引新（mtime 比较）→ 整库过期」，已删除：
+        # 它会抢在 manifest 之前把整库判死，使 doc_index 的增量在启动路径上失效
+        # （改一个 md、重启一次 = 删光 1130 条再全量重嵌）。文档级变更现在完全由
+        # compute_sync_plan 决定，走 sync() 精确增量。
+        # 目录集签名这条必须留：隐藏/启用语料目录只改常量、不动任何文件，
+        # 没有它就会复用口径已变的旧 collection（残留孤儿向量）。
+        stale = _meta.get("subdirs") != subdirs_signature()
+        if not force and cur > 0 and not stale:
             print(f"reused chroma index ({cur} docs)", flush=True)
-            return
+            return False
         if cur > 0:
             # chromadb 1.5.x 不再接受 delete(where={})（要求至少一个 operator），
             # 改为按 id 删除已有文档后再重建。
@@ -741,11 +796,19 @@ class ChromaRetriever(BaseRetriever):
         # 规避不同 chroma 版本对自定义 EF 的 name/调用约定差异导致的报错）
         vecs = self._embed_texts(docs)
         self._coll.add(ids=ids, documents=docs, embeddings=vecs, metadatas=metas)
-        self._coll.modify(metadata={"data_mtime": self._data_mtime()})
+        # data_mtime 不再参与过期判定（见上），仅作为诊断信息保留在 collection 元数据里
+        self._coll.modify(metadata={"data_mtime": self._data_mtime(),
+                                    "subdirs": subdirs_signature()})
         print(f"built chroma index via {self._model} ({self._coll.count()} docs)", flush=True)
+        return True
 
     def sync(self, rechunk, remove):
-        """增量：chroma 原生支持按 id 删/加，只动变化文档。"""
+        """增量：chroma 原生支持按 id 删/加，只动变化文档。
+
+        顺序必须是「先 delete 再写入」：修改过的文档由 compute_sync_plan 同时放进
+        remove（旧 chunk_ids）和 rechunk（新 chunks），先清后建才能保证段落增删后
+        不留孤儿向量。
+        """
         removed = [cid for ids in remove.values() for cid in ids]
         if removed:
             # chromadb 1.5.x 不允许 delete(ids=[]) 空列表，先判空
@@ -760,7 +823,16 @@ class ChromaRetriever(BaseRetriever):
                 m["structure"] = m.get("structure", "") or ""
                 metas.append(m)
             vecs = self._embed_texts(docs)
-            self._coll.add(ids=ids, documents=docs, embeddings=vecs, metadatas=metas)
+            # 必须用 upsert 而非 add：chromadb 1.5.9 实测，add 遇到已存在的 id 会
+            # **静默忽略**（不抛异常、不告警、count 不变，库里留着旧向量），
+            # 一旦上面的 delete 有任何遗漏，修改就会悄无声息地不生效。
+            # upsert 是覆盖语义，作为第二道保险。
+            self._coll.upsert(ids=ids, documents=docs, embeddings=vecs, metadatas=metas)
+        if removed or new:
+            # 增量后必须回写水位：否则 collection.metadata 仍停在旧 data_mtime，
+            # 下次启动 add() 会判定「有文件比索引新」→ 整库重嵌，增量等于白做。
+            self._coll.modify(metadata={"data_mtime": self._data_mtime(),
+                                        "subdirs": subdirs_signature()})
             print(f"  [chroma sync] +{len(new)} -{len(removed)} docs", flush=True)
 
     def count(self):

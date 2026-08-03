@@ -36,15 +36,36 @@ def _terms(s):
 
 
 # 参与检索的语料目录。
-# book/ 由 extract_pdf_plumber.py 生成：pdfplumber + PDF 书签层级做语义切分，
-#   一个文件 = 原书的一个 level2 节（天然的 parent），文件内 ## = level3 小节（child）。
-# book_zh/ 由 extract_pdf_plumber_zh.py 生成：同一本书的中文版（DataBook-mono.pdf），
-#   切分逻辑与 book/ 完全一致（书签层级同英文，仅中文标题靠「小节编号前缀」从正文抓）。
-# open/ 是它的前身（extract_pdf.py + PyPDF2 按物理页切的 323 个页片段），
-#   内容与 book/ 完全重复，但丢空格、混页眉页脚、切断语义、structure 一律留空导致
-#   任何查询都能召回，是 precision 偏低的主要噪声源 —— 已被 book/ 取代，
-#   文件保留在磁盘上作为对照，但不再进入检索。
-SUBDIRS = ("interview", "notes", "generated", "book", "book_zh", "knowledge")
+# book_zh/ 由 extract_pdf_plumber_zh.py 生成：ODS 教材中文版（DataBook-mono.pdf），
+#   pdfplumber + PDF 书签层级做语义切分，一个文件 = 原书一个 level2 节，
+#   文件内 ## = level3 小节（child）。
+# book/ 是同一本书的**英文原版**（extract_pdf_plumber.py 生成，切分逻辑一致）。
+#   ⚠️ 默认**不参与检索**：与 book_zh/ 内容完全重复，中文问答场景下英文 child
+#   只会挤占 top-k、稀释中文召回，属同源冗余。文件保留在磁盘上（可随时启用）。
+#   需要临时启用英文原版时，设环境变量即可，无需改代码：
+#       set RAG_SUBDIRS=interview,notes,generated,book,book_zh,knowledge
+# open/ 是 book/ 的前身（extract_pdf.py + PyPDF2 按物理页切的 323 个页片段），
+#   丢空格、混页眉页脚、切断语义、structure 一律留空导致任何查询都能召回，
+#   是 precision 偏低的主要噪声源 —— 已被 book/ 取代，同样不再进入检索。
+_DEFAULT_SUBDIRS = ("interview", "notes", "generated", "book_zh", "knowledge")
+
+_env_subdirs = os.environ.get("RAG_SUBDIRS", "").strip()
+SUBDIRS = (tuple(s.strip() for s in _env_subdirs.split(",") if s.strip())
+           if _env_subdirs else _DEFAULT_SUBDIRS)
+
+
+def subdirs_signature():
+    """当前生效语料目录集的指纹，用于让索引缓存感知「目录集变化」。
+
+    为什么必须有它：各 retriever 判断缓存是否过期，靠的都是「data/ 下有没有 .md
+    比索引新」。而启用/隐藏一个语料目录（如隐藏 book/）只改这里的常量、**不会
+    改动任何文件的 mtime** —— 于是缓存一律被判定为「未过期」，直接复用仍含
+    book/ 向量的旧索引，改动静默失效。把指纹写进缓存元数据并参与过期判定，
+    目录集一变就自动重建，从根上杜绝孤儿向量。
+
+    用 sorted 是为了让「顺序调整」不触发无谓重建（集合相同即视为相同）。
+    """
+    return "|".join(sorted(SUBDIRS))
 
 
 def sanitize_id(s):
@@ -128,48 +149,6 @@ def load_chunks(data_dir):
         chunks.extend(chunk_file(fp, data_dir))
 
     return chunks
-
-
-def build_source_full(chunks, cap=20000):
-    """把一个 source 下的所有 child chunk 聚合成整篇文本（Parent-Child 的 parent 视图）。
-
-    检索用 child chunk（向量/关键词匹配精度高），但喂给 LLM 的上下文用整篇
-    parent —— 避免模型只看到单段、漏掉同篇其它段落的关键事实（如
-    lru_mechanism.md「最久未访问的在表尾」落在另一段时，单段上下文会让模型
-    答错或被判 unsupported）。parent_id 即 source 自身；不再重新切分、不破坏
-    中文语义边界。超长文档按 cap 截断，避免喂爆上下文窗口。
-
-    cap 为什么是 20000 而不是原来的 4000：
-    source_full 的主要消费者是 eval_generation 的 Judge —— 它要逐条核验 claim
-    是否被原文支持，看不到的部分一律判 unsupported。原 cap=4000 从篇首硬截，
-    而 knowledge/ 单篇平均 1.9 万字、book/ 每个 parent 平均 7215 字（43 个全部
-    超过 4000），关键事实落在截断线之后时会被误判成幻觉（实测 [18] 排序复杂度
-    faith=0.26、[35] 图找环 faith=0.29 都是这么来的，属于评测假阴性而非真幻觉）。
-    生产路径受影响较小（llm._passage_text 优先走 parent_index 窗口，
-    source_full 只是回退），但 Judge 必然踩中，因此放宽到 20000。
-    """
-    source_full = {}
-    for c in chunks:
-        s = str(c.get("metadata", {}).get("source", "")).replace("\\", "/")
-        if s:
-            source_full[s] = (source_full.get(s, "") + "\n\n" + c["text"]).strip()
-    return {s: t[:cap] for s, t in source_full.items()}
-
-
-def build_parent_index(chunks):
-    """建 {source: [child_text, ...]} 有序映射，供 Parent-Child 动态取「命中段窗口」。
-
-    检索命中某 child 后，喂给主 LLM 的上下文不取整篇（2~4 万字大文件会喂爆
-    上下文窗口），而是以命中 child 为中心、取其同 source 前后各 window 个 ## 段
-    拼成 parent 窗口（见 llm._passage_text）。粒度介于单 child 与整篇之间：
-    既补上同篇相邻段漏看的关键事实，又不把巨文件整篇塞进上下文。
-    """
-    idx = {}
-    for c in chunks:
-        s = str(c.get("metadata", {}).get("source", "")).replace("\\", "/")
-        if s:
-            idx.setdefault(s, []).append(c["text"])
-    return idx
 
 
 if __name__ == "__main__":

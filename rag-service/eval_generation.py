@@ -26,9 +26,10 @@ import urllib.error
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from chunks import load_chunks, build_source_full, build_parent_index
+from chunks import load_chunks
 from retriever import build_retriever, NaiveRetriever
-from llm import call_llm, build_prompt
+from hybrid import hybrid_search
+from llm import call_llm, build_prompt, rewrite_query
 from config import (
     RETRIEVER, OPENAI_API_KEY, OPENAI_BASE_URL, OPENAI_MODEL,
     DATA_DIR, INDEX_PATH, EMBEDDING_MODEL,
@@ -100,30 +101,16 @@ def _judge_call(prompt, timeout=30):
 # ============================================================
 # 评测上下文构造：给 Judge 看「整篇来源文档」而非单 chunk 前 800 字
 # ============================================================
-def _source_context(h, source_full, cap=20000):
+def _source_context(h):
     """faithfulness / precision 判分时构造喂给 Judge 的上下文。
 
-    关键修复：原先只用 `h.text[:800]`，而 lru_mechanism.md 等长笔记被按
-    `##` 标题切成多段 chunk、又被 `_dedup_by_source` 压成「每篇只留得分最高
-    的一段」进 top-5。于是 Judge 只看到该笔记的某一小段，关键事实（如
-    「最久未访问的在表尾」）落在另一段时便「看不到」→ 误判 unsupported，
-    制造假幻觉（缓存满了踢谁 faith=0.00 即此坑）。
-
-    这里改为：若该来源整篇文档已预加载（source_full），直接给 Judge 看整篇
-    （按 cap 截断，控制 token），让任意段落里的事实都能被核验。
-
-    cap 从 4000 放宽到 20000：4000 只是把「只看一段」的问题缩小成「只看开头
-    4000 字」，并没有真正解决。knowledge/ 单篇平均 1.9 万字、book/ 每个 parent
-    平均 7215 字，关键事实落在截断线之后依然会被判 unsupported —— [18] 排序
-    复杂度 faith=0.26（17 条假阴性，关键事实在 char 18592）、[35] 图找环
-    faith=0.29（char 9390）都是这么来的。放宽后 Judge 的 token 成本上升，
-    但 faithfulness 才是真实信号；注意这会让分数与放宽前的历史批次不可直接比较。
+    标准 RAG：检索命中的小块即作为证据上下文，直接返回该 chunk 原文，
+    不扩展整篇 parent（之前 Parent-Child 的整篇/窗口扩展为非标准做法，已回退）。
     """
-    src = str(h.metadata.get("source", "")).replace("\\", "/")
-    if source_full and src in source_full:
-        return source_full[src][:cap]
-    # 兜底：未提供全量文档时，至少给到前 2000 字（原 800 太短）
-    return h.text[:2000]
+    t = getattr(h, "text", None)
+    if t is None and isinstance(h, dict):
+        t = h.get("text", "")
+    return t or ""
 
 
 # ============================================================
@@ -192,12 +179,12 @@ CONTEXT_PRECISION_PROMPT = """请评估以下每条检索资料与用户问题�
 precision = relevant_count（score>=2 的条数）/ 总条数"""
 
 
-def eval_context_precision(question, hits, source_full=None):
+def eval_context_precision(question, hits):
     """评估 top-k 检索结果中有多少是真正相关的。"""
     if not hits:
         return {"scores": [], "relevant_count": 0, "precision": 0.0}
     numbered = "\n\n".join(
-        f"【资料 {i+1}】{_source_context(h, source_full)}" for i, h in enumerate(hits[:5])
+        f"【资料 {i+1}】{_source_context(h)}" for i, h in enumerate(hits[:5])
     )
     prompt = CONTEXT_PRECISION_PROMPT.format(
         question=question, n=min(len(hits), 5), numbered_contexts=numbered
@@ -229,11 +216,11 @@ CONTEXT_RECALL_PROMPT = """请评估检索资料是否覆盖了标准答案中�
 recall = covered / total"""
 
 
-def eval_context_recall(question, hits, ground_truth, source_full=None):
+def eval_context_recall(question, hits, ground_truth):
     """评估检索资料是否覆盖了回答所需的全部关键信息。"""
     if not ground_truth:
         return None  # 没有 ground truth 就跳过
-    context = "\n\n".join(_source_context(h, source_full) for h in hits[:5])
+    context = "\n\n".join(_source_context(h) for h in hits[:5])
     prompt = CONTEXT_RECALL_PROMPT.format(
         question=question, ground_truth=ground_truth, context=context
     )
@@ -271,11 +258,11 @@ VERIFY_CLAIMS_PROMPT = """请判断以下每条声明是否能在给定资料中
 faithfulness = supported_count / total"""
 
 
-def eval_faithfulness(question, hits, answer, source_full=None):
+def eval_faithfulness(question, hits, answer):
     """检测 LLM 回答中有多少事实声明有资料支撑（幻觉检测）。"""
     if not answer or answer.startswith("[LLM 调用失败"):
         return {"faithfulness": 0.0, "error": True}
-    context = "\n\n".join(_source_context(h, source_full) for h in hits[:5])
+    context = "\n\n".join(_source_context(h) for h in hits[:5])
 
     # 第一步：提取事实声明
     extract_result = _judge_call(EXTRACT_CLAIMS_PROMPT.format(answer=answer[:2000]))
@@ -393,7 +380,7 @@ def build_eval_retriever(kind):
 def main():
     ap = argparse.ArgumentParser(description="RAG 生成层质量评估（LLM-as-a-Judge）")
     ap.add_argument("--retriever", default="chroma",
-                    choices=["naive", "semantic", "chroma"])
+                    choices=["naive", "semantic", "chroma", "hybrid"])
     ap.add_argument("--limit", type=int, default=0,
                     help="只评估前 N 条（0=全部）")
     ap.add_argument("--start", type=int, default=0,
@@ -402,24 +389,32 @@ def main():
                     default=["precision", "faithfulness", "relevancy"],
                     choices=["precision", "recall", "faithfulness", "relevancy"],
                     help="要评估的指标（默认不跑 recall，因为需要 ground truth）")
+    ap.add_argument("--no-rewrite", action="store_true",
+                    help="hybrid 模式下禁用向量路查询改写（省 API 调用）")
     args = ap.parse_args()
 
     if not OPENAI_API_KEY:
         raise SystemExit("[eval-gen] 需要 OPENAI_API_KEY 做 Judge 调用，请在 .env 配置。")
 
-    retr = build_eval_retriever(args.retriever)
+    # hybrid 模式：同时构建向量路 + 关键词路，走 RRF 融合（与生产 server.py 一致）
+    if args.retriever == "hybrid":
+        vec_retr = build_eval_retriever("chroma")
+        kw_retr = build_eval_retriever("naive")
+        retr = None
+        rewrite_fn = None
+        if not args.no_rewrite:
+            def rewrite_fn(q, ctx):
+                return rewrite_query(
+                    q, ctx,
+                    api_key=OPENAI_API_KEY, base_url=OPENAI_BASE_URL, model=OPENAI_MODEL,
+                )
+    else:
+        vec_retr = None
+        kw_retr = None
+        retr = build_eval_retriever(args.retriever)
+        rewrite_fn = None
 
-    # 预加载全部 chunk，按 source 聚合成整篇文档，供 faithfulness/precision 判分使用：
-    # 避免长笔记被截成单段/被 source 去重压成一段后关键事实不可见 → 误判 unsupported。
-    all_chunks = load_chunks(DATA_DIR)
-    source_full = {}
-    for c in all_chunks:
-        s = str(c.get("metadata", {}).get("source", "")).replace("\\", "/")
-        if s:
-            source_full[s] = (source_full.get(s, "") + "\n\n" + c["text"]).strip()
-    # Parent-Child：主 LLM 生成答案时用「命中段窗口」（围绕命中 child 取前后段），
-    # 与生产 server 链路一致；Judge 判分仍看整篇 source_full。
-    parent_index = build_parent_index(all_chunks)
+    # 标准 RAG：命中小块即返回该小块，无需聚合整篇 / parent 窗口。
 
     queries = QUERIES[args.start:]
     if args.limit > 0:
@@ -443,7 +438,14 @@ def main():
         print(f"[{i+1}/{len(queries)}] {q[:40]}...", flush=True)
 
         # 1) 检索
-        hits = retr.query(q, k=5, structure=struct)
+        if args.retriever == "hybrid":
+            hits = hybrid_search(
+                q, vec_retr, kw_retr, k=5,
+                structure=struct, context={"structure": struct or ""},
+                rewrite_fn=rewrite_fn,
+            )
+        else:
+            hits = retr.query(q, k=5, structure=struct)
 
         # 2) 生成回答（复用主 LLM 链路）
         context = {"structure": struct or ""}
@@ -452,15 +454,13 @@ def main():
             provider="openai", api_key=OPENAI_API_KEY,
             base_url=OPENAI_BASE_URL, model=OPENAI_MODEL,
             temperature=0.0,   # 评测钉死温度，保证同 query 回答可复现、faithfulness 跑批可比
-            source_full=source_full,   # Judge 用整篇核验
-            parent_index=parent_index, # 主 LLM 用命中段窗口（与生产一致）
         )
 
         row = {"q": q, "struct": struct, "answer_len": len(answer)}
 
         # 3) 逐指标评估
         if "precision" in metrics:
-            r = eval_context_precision(q, hits, source_full)
+            r = eval_context_precision(q, hits)
             p, pnote = _recompute_precision(r, len(hits))  # 以 scores 明细为准
             agg["precision"].append(p)
             row["precision"] = p
@@ -468,7 +468,7 @@ def main():
                   flush=True)
 
         if "recall" in metrics and gt:
-            r = eval_context_recall(q, hits, gt, source_full)
+            r = eval_context_recall(q, hits, gt)
             if r:
                 rc = r.get("recall", 0.0)
                 agg["recall"].append(rc)
@@ -476,7 +476,7 @@ def main():
                 print(f"    recall={rc:.2f}", flush=True)
 
         if "faithfulness" in metrics:
-            r = eval_faithfulness(q, hits, answer, source_full)
+            r = eval_faithfulness(q, hits, answer)
             f, sup, tot, fnote = _recompute_faith(r)  # 以 results 明细为准，防虚高
             agg["faithfulness"].append(f)
             row["faithfulness"] = f

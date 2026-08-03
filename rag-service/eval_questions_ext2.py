@@ -15,36 +15,36 @@ NEW_QUERIES_2 = [
     # ========== "为什么"类（原理追问）==========
     {"q": "为什么红黑树不要求严格平衡还能保证O(logn)",
      "structure": "RedBlackTree",
-     "rel": ["notes/node_coloring.md", "generated/RedBlackTree.md", "notes/avl_vs_rbtree.md"]},
+     "rel": ["notes/node_coloring.md", "generated/RedBlackTree.md", "notes/avl_vs_rbtree.md", "notes/rbtree_why_weak_balance.md"]},
 
     {"q": "为什么B+树的叶子节点要用链表串起来",
      "structure": "BPlusTree",
-     "rel": ["generated/BPlusTree.md", "notes/b_tree_operations.md"]},
+     "rel": ["generated/BPlusTree.md", "notes/b_tree_operations.md", "notes/bplus_vs_btree.md"]},
 
     {"q": "为什么哈希表负载因子到0.75就要扩容",
      "structure": "HashMap",
-     "rel": ["knowledge/hashtable.md", "generated/HashMap.md", "notes/hash_collision.md"]},
+     "rel": ["knowledge/hashtable.md", "generated/HashMap.md", "notes/hash_collision.md", "notes/hash_table_worst_case.md"]},
 
     {"q": "为什么LRU用哈希表加双向链表而不是只用数组",
      "structure": "LRUCache",
-     "rel": ["notes/lru_mechanism.md", "generated/LRUCache.md", "generated/DoublyLinkedList.md"]},
+     "rel": ["notes/lru_mechanism.md", "generated/LRUCache.md", "generated/DoublyLinkedList.md", "notes/lru_design_edge_cases.md"]},
 
     # ========== 反事实 / "如果不做X会怎样" ==========
     {"q": "AVL树如果不做旋转直接插会退化成什么样",
      "structure": "AVLTree",
-     "rel": ["notes/avl_rotation.md", "generated/AVLTree.md", "knowledge/bst.md"]},
+     "rel": ["notes/avl_rotation.md", "generated/AVLTree.md", "knowledge/bst.md", "notes/bst_degenerate_successor.md"]},
 
     {"q": "哈希表如果不处理冲突所有元素都堆一个桶里会怎样",
      "structure": "HashMap",
-     "rel": ["notes/hash_collision.md", "knowledge/hashtable.md", "generated/HashMap.md"]},
+     "rel": ["notes/hash_collision.md", "knowledge/hashtable.md", "generated/HashMap.md", "notes/hash_table_worst_case.md"]},
 
     {"q": "堆如果插入后不做上浮调整还能保证堆序性吗",
      "structure": "MinHeap",
-     "rel": ["notes/heapify.md", "generated/MinHeap.md", "knowledge/heap.md"]},
+     "rel": ["notes/heapify.md", "generated/MinHeap.md", "knowledge/heap.md", "notes/heap_topk.md"]},
 
     {"q": "并查集不做路径压缩最坏复杂度是多少",
      "structure": "UFDS",
-     "rel": ["knowledge/ufds.md"]},
+     "rel": ["knowledge/ufds.md", "notes/ufds_path_compression.md", "notes/ufds_union_by_rank.md"]},
 
     # ========== 中英混杂 / 非标准术语 ==========
     {"q": "red-black tree的rotate操作什么时候触发",
@@ -57,11 +57,11 @@ NEW_QUERIES_2 = [
 
     {"q": "binary search tree的successor怎么找",
      "structure": "BinarySearchTree",
-     "rel": ["generated/BinarySearchTree.md", "notes/bst_delete.md", "knowledge/bst.md"]},
+     "rel": ["generated/BinarySearchTree.md", "notes/bst_delete.md", "knowledge/bst.md", "notes/bst_degenerate_successor.md"]},
 
     {"q": "heap的top k问题一般怎么解",
      "structure": "",
-     "rel": ["knowledge/heap.md", "generated/MinHeap.md", "notes/heapify.md"]},
+     "rel": ["knowledge/heap.md", "generated/MinHeap.md", "notes/heapify.md", "notes/heap_topk.md"]},
 
     # ========== 极短模糊查询 ==========
     {"q": "左旋右旋",
@@ -83,7 +83,7 @@ NEW_QUERIES_2 = [
     # ========== 应用场景选型 ==========
     {"q": "实现一个消息队列应该用哪种数据结构",
      "structure": "",
-     "rel": ["notes/queue_family.md", "generated/Queue.md", "generated/BlockingQueue.md", "generated/CircularQueue.md"]},
+     "rel": ["notes/queue_family.md", "generated/Queue.md", "generated/BlockingQueue.md", "generated/CircularQueue.md", "notes/blocking_queue.md", "notes/data_structure_selection.md"]},
 
     {"q": "浏览器的前进后退功能用什么结构实现",
      "structure": "",
@@ -91,17 +91,17 @@ NEW_QUERIES_2 = [
 
     {"q": "操作系统任务调度适合用什么结构",
      "structure": "",
-     "rel": ["knowledge/heap.md", "generated/MinHeap.md", "generated/Queue.md"]},
+     "rel": ["knowledge/heap.md", "generated/MinHeap.md", "generated/Queue.md", "notes/data_structure_selection.md", "notes/heap_topk.md", "notes/queue_family.md"]},
 
     # ========== 同族结构内部对比 ==========
     {"q": "单链表双链表循环链表各自的优势在哪",
      "structure": "",
      "rel": ["generated/SinglyLinkedList.md", "generated/DoublyLinkedList.md",
-             "generated/CircularQueue.md", "knowledge/list.md"]},
+             "generated/CircularQueue.md", "knowledge/list.md", "notes/data_structure_selection.md"]},
 
     {"q": "普通队列循环队列阻塞队列分别解决什么问题",
      "structure": "",
-     "rel": ["notes/queue_family.md", "generated/Queue.md", "generated/CircularQueue.md", "generated/BlockingQueue.md"]},
+     "rel": ["notes/queue_family.md", "generated/Queue.md", "generated/CircularQueue.md", "generated/BlockingQueue.md", "notes/circular_queue_empty_full.md", "notes/blocking_queue.md"]},
 
     # ========== 实现细节追问 ==========
     {"q": "红黑树旋转的时候parent指针怎么更新才不会断",
@@ -114,12 +114,12 @@ NEW_QUERIES_2 = [
 
     {"q": "图的邻接表和邻接矩阵存稀疏图哪个更省空间",
      "structure": "Graph",
-     "rel": ["knowledge/graphds.md", "generated/Graph.md"]},
+     "rel": ["knowledge/graphds.md", "generated/Graph.md", "notes/graph_storage.md"]},
 
     # ========== 多跳组合（需跨 chunk 拼答案）==========
     {"q": "AVL树的旋转和堆的sift up有什么共同点",
      "structure": "",
-     "rel": ["notes/avl_rotation.md", "notes/heapify.md", "knowledge/heap.md"]},
+     "rel": ["notes/avl_rotation.md", "notes/heapify.md", "knowledge/heap.md", "notes/heap_topk.md"]},
 
     {"q": "用栈实现递归转迭代的一般方法是什么",
      "structure": "",
@@ -127,15 +127,15 @@ NEW_QUERIES_2 = [
 
     {"q": "Dijkstra里面用的优先队列是不是就是最小堆",
      "structure": "Graph",
-     "rel": ["knowledge/sssp.md", "knowledge/heap.md", "generated/MinHeap.md"]},
+     "rel": ["knowledge/sssp.md", "knowledge/heap.md", "generated/MinHeap.md", "notes/dijkstra.md"]},
 
     # ========== 面试高频综合题 ==========
     {"q": "手写一个LRU要多久，关键难点在哪",
      "structure": "LRUCache",
-     "rel": ["notes/lru_mechanism.md", "generated/LRUCache.md", "generated/DoublyLinkedList.md"]},
+     "rel": ["notes/lru_mechanism.md", "generated/LRUCache.md", "generated/DoublyLinkedList.md", "notes/lru_design_edge_cases.md"]},
 
     {"q": "面试被问到红黑树怎么答才能不翻车",
      "structure": "RedBlackTree",
      "rel": ["notes/node_coloring.md", "notes/rb_insert.md", "notes/rb_delete.md",
-             "generated/RedBlackTree.md", "notes/avl_vs_rbtree.md"]},
+             "generated/RedBlackTree.md", "notes/avl_vs_rbtree.md", "notes/rbtree_why_weak_balance.md"]},
 ]

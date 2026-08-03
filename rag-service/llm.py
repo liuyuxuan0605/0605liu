@@ -32,7 +32,8 @@ SYSTEM_PROMPT = """你是一个数据结构可视化教学助教，面向正在�
 6. 若某条【检索资料】与用户问题无关，请直接忽略，不要据此作答；不要把不相关的资料当作答案依据，也不要为了凑内容而引用它。
 7. 若用户明确要求“跳到/演示/查看/切换到”另一个数据结构，可在 JSON 里附加 actions：[{"type":"jump","structure":"<结构名>"}]。可用结构名（严格区分大小写）：SinglyLinkedList, DoublyLinkedList, Stack, Queue, BinarySearchTree, AVLTree, HashMap, MinHeap, RedBlackTree, Deque, BlockingQueue, BTree, BPlusTree, RingBuffer, Graph, LRUCache。仅当用户主动要求切换时才使用，不要主动跳转。
 8. 若用户明确要求“演示/分步讲解/逐步演示/动画演示”某个数据结构的操作，或问题中出现“按顺序/依次/顺序”等明显要观察过程的词（如“演示 AVL 树插入并解释旋转”“逐步讲解红黑树删除”“动画演示栈的 push/pop”“按顺序插入 12,3,9,18,5”），**必须在 actions 中返回 step_explain，禁止只给文字解释**。structure 为要演示的结构（与当前不同会自动切换）；steps 为依次执行的操作序列，op 取值：insert/find/remove/pushFront/pushBack/popFront/popBack/addVertex/addEdge/bfs/dfs/dijkstra，value 为操作值（无值操作如 remove/popFront 用空字符串 ""）。**若用户没有给出具体数值，你必须自行选择 3-5 个能演示该知识点的典型数值**；若用户给出多个数值（如“按顺序插入 12,3,9,18,5”），则必须把每个数值拆成一个 step，按顺序放入 steps，例如："按顺序插入 12,3,9,18,5" → [{"op":"insert","value":"12"},{"op":"insert","value":"3"},{"op":"insert","value":"9"},{"op":"insert","value":"18"},{"op":"insert","value":"5"}]。例如：演示 AVL 右旋用 30,20,10；左旋用 10,20,30；左右双旋用 30,10,20；红黑树插入触发旋转用 10,20,30；栈 push/pop 用 10,20,30,20。steps 不能为空。
-9. 若用户问题包含明确操作词 + 可选具体数值，且**没有**要求"演示/分步/逐步/动画/讲解/按顺序/依次"，则**必须在 actions 中返回 run_operation，禁止只给文字解释**。常见操作词：插入、删除、查找、push、pop、pushFront、pushBack、popFront、popBack、addVertex、addEdge、bfs、dfs、dijkstra。示例："在 AVL 树里插入 42" → [{"type":"run_operation","structure":"AVLTree","op":"insert","value":"42"}]；"push 5" → [{"type":"run_operation","op":"push","value":"5"}]；"删除 10" → [{"type":"run_operation","op":"remove","value":"10"}]。structure 仅在目标结构与当前结构不同才填（前端会自动先切换），相同则可省略。run_operation 用于"立刻执行单个操作"，与 step_explain 的"分步讲解"区分：用户要"演示/讲解步骤/按顺序看过程"用 step_explain，要"直接做某操作"用 run_operation。"""
+9. 若用户问题包含明确操作词 + 可选具体数值，且**没有**要求"演示/分步/逐步/动画/讲解/按顺序/依次"，则**必须在 actions 中返回 run_operation，禁止只给文字解释**。常见操作词：插入、删除、查找、push、pop、pushFront、pushBack、popFront、popBack、addVertex、addEdge、bfs、dfs、dijkstra。示例："在 AVL 树里插入 42" → [{"type":"run_operation","structure":"AVLTree","op":"insert","value":"42"}]；"push 5" → [{"type":"run_operation","op":"push","value":"5"}]；"删除 10" → [{"type":"run_operation","op":"remove","value":"10"}]。structure 仅在目标结构与当前结构不同才填（前端会自动先切换），相同则可省略。run_operation 用于"立刻执行单个操作"，与 step_explain 的"分步讲解"区分：用户要"演示/讲解步骤/按顺序看过程"用 step_explain，要"直接做某操作"用 run_operation。
+10. **分析类操作问题**：若用户问"插入 8 会导致什么/会怎样/为什么/分析"等，他想要的是**该操作的影响、原理或历史过程分析**，不是让你现在执行这个操作。请基于【当前数据结构真实状态】作答：如果当前状态已经包含该操作结果（如树中已有这个值），则解释从操作前到当前状态的历史变换（包括旋转、高度变化、遍历路径等）；如果当前状态不包含该操作结果，则分析 hypothetical 执行该操作后会产生什么变化。只需输出文字讲解和 highlight_nodes，**不要返回 run_operation 或 step_explain actions**。"""
 
 
 # ⚠️ 普通字符串（非 f-string、非 .format），其中的 { } 是 JSON 示例的合法字符，
@@ -56,38 +57,52 @@ def _text_of(h):
     return t or ""
 
 
-def _passage_text(h, source_full=None, parent_index=None, cap=3000, window=1):
-    """Parent-Child：返回喂给主 LLM 的段落文本。
+def _passage_text(h):
+    """返回喂给主 LLM 的段落文本（标准 RAG：命中小块即返回该小块本身）。
 
-    优先用 parent 窗口——以命中 child 为中心、取同 source 前后各 window 个 ## 段
-    拼接（见 chunks.build_parent_index）。这样既不漏掉同篇相邻段的关键事实，又避免
-    把 2~4 万字整篇文档喂进上下文窗口（旧 build_source_full 从文件头截断，命中段落在
-    后段时模型反而看不到，比单 child 还退步）。回退 source_full 整篇聚合；再回退单 child。
+    不做 Parent-Child 窗口扩展：检索命中的 child chunk 即为上下文单元，
+    直接返回其原文。相邻段的事实靠 top-k 多块召回覆盖。
     """
-    # 1) parent 窗口（推荐）：围绕命中 child 取同 source 前后各 window 段
-    if parent_index:
-        src = _src_of(h)
-        lst = parent_index.get(src)
-        if lst:
-            ht = _text_of(h)
-            try:
-                i = lst.index(ht)
-            except ValueError:
-                i = -1
-            if i >= 0:
-                lo = max(0, i - window)
-                hi = min(len(lst), i + window + 1)
-                return "\n\n".join(lst[lo:hi])[:cap]
-    # 2) 整篇聚合（兼容旧链路 / Judge 场景）
-    if source_full:
-        src = _src_of(h)
-        if src in source_full:
-            return source_full[src][:cap]
-    # 3) 单 child 兜底
     return _text_of(h)
 
 
-def build_prompt(question, hits, context, source_full=None, parent_index=None):
+# 操作词（与 run_hint 保持一致）
+_OPERATION_RE = re.compile(
+    r"(插入|删除|查找|push|pop|pushFront|pushBack|popFront|popBack|addVertex|addEdge|bfs|dfs|dijkstra)\s*(\d+)",
+    re.IGNORECASE,
+)
+
+# 分析类语气词：出现这些词说明用户要"影响/原理/过程/结果"，不是执行。
+_ANALYZE_KWS = (
+    "会导致", "会怎样", "会发生什么", "为什么", "分析", "解释", "原理", "过程", "结果",
+    "后果", "之后", "走势", "变化", "影响", "怎么", "变成",
+    "会旋转", "会失衡", "会变化", "会变", "会触发",
+)
+
+# 演示/执行词：出现这些词则优先走 step_explain / run_operation，不归入分析类。
+# 注意与 build_prompt 里 has_demo_kw 的清单保持一致。
+_DEMO_EXEC_KWS = (
+    "演示", "分步", "逐步", "动画", "讲解", "按顺序", "依次", "walk through", "show me",
+    "执行", "给我", "走一遍", "看一下",
+)
+
+
+def _is_analyze_operation(question):
+    """判断是否为'分析操作影响/原理/历史过程'类问题。
+
+    特征：含操作词 + 数值，且含分析语气词，且不含明确演示/执行词。
+    例如："插入 8 会导致什么"、"删除 10 会怎样"、"push 5 之后栈怎么变"。
+    反例："插入 8"（执行）、"演示插入 8"（分步）、"在 AVL 树里插入 8"（执行）。
+    """
+    q = question
+    if not _OPERATION_RE.search(q):
+        return False
+    has_analyze = any(kw in q for kw in _ANALYZE_KWS)
+    has_demo_exec = any(kw in q.lower() for kw in _DEMO_EXEC_KWS)
+    return has_analyze and not has_demo_exec
+
+
+def build_prompt(question, hits, context, history=None):
     if isinstance(context, dict):
         blocks = []
         if context.get("tree_state"):
@@ -104,8 +119,27 @@ def build_prompt(question, hits, context, source_full=None, parent_index=None):
         ctx_text = "\n\n".join(blocks)
     else:
         ctx_text = context if isinstance(context, str) else json.dumps(context, ensure_ascii=False)
+
+    # 多轮对话历史（方案1：前端累积最近 N 轮 Q&A，仅作上下文延续，帮助理解追问指代）
+    history_text = ""
+    if history:
+        items = []
+        for h in history[-6:]:
+            if not isinstance(h, dict):
+                continue
+            q = (h.get("question") or "").strip()
+            a = (h.get("answer") or "").strip()
+            if q or a:
+                items.append(f"Q: {q}\nA: {a}")
+        if items:
+            history_text = (
+                "【对话历史（最近若干轮，仅用于理解用户追问中的指代，如“它/这个/刚才说的”；"
+                "历史答案可能过时或不完整，请以“检索资料”和“当前可视化上下文”为准】\n"
+                + "\n\n".join(items)
+            )
+
     knowledge = "\n\n".join(
-        f"[资料 {i+1} | {h.metadata.get('source','')} | {h.metadata.get('structure','')}]\n{_passage_text(h, source_full, parent_index)}"
+        f"[资料 {i+1} | {h.metadata.get('source','')} | {h.metadata.get('structure','')}]\n{_passage_text(h)}"
         for i, h in enumerate(hits)
     )
     # 检索质量 → 动态指令（忠实度防线）
@@ -123,19 +157,29 @@ def build_prompt(question, hits, context, source_full=None, parent_index=None):
     has_demo_kw = any(kw in question for kw in ("演示", "分步", "逐步", "动画", "讲解", "按顺序", "依次", "顺序", "walk through", "show me"))
     if has_demo_kw:
         demo_hint = "【用户要求分步演示/按顺序观察过程，必须在 actions 中返回 step_explain；steps 不能为空。若用户没有给出具体数值，请自行选择 3-5 个典型数值；若用户给出多个数值（如“插入 12,3,9,18,5”），必须把每个数值拆成一个 step 按顺序放入 steps。】\n"
-    # 直接执行类请求：问题含操作词+数值，但未要求分步演示 → 必须 run_operation
+    # 分析类操作请求：问"插入8会导致什么/会怎样/为什么"——要原理/历史过程，不是执行。
+    analyze_hint = ""
+    if _is_analyze_operation(question):
+        analyze_hint = (
+            "【用户问的是某个操作会造成什么影响/结果/原理，属于分析类问题，不是要求执行该操作。"
+            "请基于当前真实状态回答：若当前状态已包含该操作结果（如树中已有该值），则解释从操作前到当前状态的历史变换过程（包括旋转、高度变化、遍历路径等）；"
+            "若当前状态不包含该操作结果，则分析 hypothetical 执行该操作后会怎样。"
+            "不要返回 run_operation 或 step_explain actions，只需文字讲解 + highlight_nodes。】\n"
+        )
+    # 直接执行类请求：问题含操作词+数值，且未要求分步演示、且不是分析类 → 必须 run_operation
     run_hint = ""
-    if not has_demo_kw:
-        op_pattern = re.compile(r"(插入|删除|查找|push|pop|pushFront|pushBack|popFront|popBack|addVertex|addEdge|bfs|dfs|dijkstra)\s*(\d+)", re.IGNORECASE)
-        if op_pattern.search(question):
+    if not has_demo_kw and not analyze_hint:
+        if _OPERATION_RE.search(question):
             run_hint = "【用户要求直接执行某个具体操作（含操作词和数值），必须在 actions 中返回 run_operation，禁止只给文字解释。】\n"
     # 注意：JSON 示例说明必须是普通字符串（非 f-string），否则其中的 { } 会被当成形
     # 式字段解析，导致 "Invalid format specifier" 运行时错误。仅下面的 6 个动态字段走 f-string。
     return f"""当前可视化上下文：{ctx_text}
 
+{history_text}
+
 {grounding}
 
-{demo_hint}{run_hint}检索资料：
+{demo_hint}{analyze_hint}{run_hint}检索资料：
 {knowledge}
 
 用户问题：{question}
@@ -148,7 +192,7 @@ def build_prompt(question, hits, context, source_full=None, parent_index=None):
 # ----------------------------------------------------------------------------
 # 作用：在检索之前，用【单次】LLM 调用把口语化 / 指代不清 / 上下文丢失的查询，
 # 改写成检索友好的规范查询（术语归一 + 上下文补全）。仅用于「向量检索路」，
-# 关键词路(TF-IDF)保持原查询不变（它自带同义词扩展兜底，且改写可能丢掉字面词）。
+# 关键词路(BM25)保持原查询不变（它自带同义词扩展兜底，且改写可能丢掉字面词）。
 #
 # 约束（防止跑偏 / 防止幻觉）：
 # - 只做「术语归一」和「上下文补全」，禁止引入资料里没有的新知识点。
@@ -258,7 +302,7 @@ def _is_arithmetic_only(question):
     return bool(cleaned) and bool(re.fullmatch(r"[\d０-９\.\+\-\*/%=]+", cleaned))
 
 
-def call_llm(question, hits, context, provider="offline", api_key="", base_url="", model="", temperature=0.3, source_full=None, parent_index=None):
+def call_llm(question, hits, context, provider="offline", api_key="", base_url="", model="", temperature=0.3, history=None):
     # 算术问题拦截：数字是运算数，不是节点值，不应触发高亮或模型计算。
     if _is_arithmetic_only(question):
         return (
@@ -281,7 +325,7 @@ def call_llm(question, hits, context, provider="offline", api_key="", base_url="
             [],
         )
     if provider != "offline" and api_key:
-        ans, hl, src, actions = _call_openai(question, hits, context, api_key, base_url, model, temperature, source_full, parent_index)
+        ans, hl, src, actions = _call_openai(question, hits, context, api_key, base_url, model, temperature, history)
         if not ans.startswith("[LLM 调用失败"):
             return ans, hl, src, actions
         # API 调用失败（key 无效 / 网络不可达 / 参数不支持）→ 降级为离线拼接，至少把检索资料给用户
@@ -326,8 +370,8 @@ def _do_chat_request(payload, api_key, base_url):
             obj.get("actions", []))
 
 
-def _call_openai(question, hits, context, api_key, base_url, model, temperature=0.3, source_full=None, parent_index=None):
-    prompt = build_prompt(question, hits, context, source_full, parent_index)
+def _call_openai(question, hits, context, api_key, base_url, model, temperature=0.3, history=None):
+    prompt = build_prompt(question, hits, context, history)
     base_payload = {
         "model": model,
         "messages": [

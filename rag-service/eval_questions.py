@@ -25,7 +25,7 @@ QUERIES = [
      "rel": ["generated/RedBlackTree.md", "notes/rb_insert.md"]},
     {"q": "红黑树的节点颜色有哪些性质/规则",
      "structure": "RedBlackTree",
-     "rel": ["generated/RedBlackTree.md", "notes/node_coloring.md"]},
+     "rel": ["generated/RedBlackTree.md", "notes/node_coloring.md", "notes/rbtree_why_weak_balance.md"]},
     {"q": "红黑树删除的双黑问题怎么处理",
      "structure": "RedBlackTree",
      "rel": ["notes/rb_delete.md", "generated/RedBlackTree.md"]},
@@ -55,7 +55,7 @@ QUERIES = [
      "rel": ["generated/BTree.md", "notes/b_tree_operations.md", "scenarios/btree_split_demo.md"]},
     {"q": "B+树和B树有什么区别",
      "structure": "BPlusTree",
-     "rel": ["generated/BPlusTree.md", "notes/b_tree_operations.md"]},
+     "rel": ["generated/BPlusTree.md", "notes/b_tree_operations.md", "notes/bplus_vs_btree.md"]},
 
     # ---- 最小堆 ----
     {"q": "最小堆怎么下沉调整（sift down / heapify）",
@@ -65,7 +65,7 @@ QUERIES = [
     # ---- 二叉搜索树 ----
     {"q": "二叉搜索树删除有两个孩子的节点怎么处理",
      "structure": "BinarySearchTree",
-     "rel": ["generated/BinarySearchTree.md", "notes/bst_delete.md", "knowledge/bst.md"]},
+     "rel": ["generated/BinarySearchTree.md", "notes/bst_delete.md", "knowledge/bst.md", "notes/bst_degenerate_successor.md"]},
     {"q": "二叉搜索树怎么插入一个新值",
      "structure": "BinarySearchTree",
      "rel": ["generated/BinarySearchTree.md", "notes/bst_insert.md", "knowledge/bst.md"]},
@@ -78,12 +78,12 @@ QUERIES = [
     # ---- 图 ----
     {"q": "图的深度优先和广度优先遍历分别怎么实现",
      "structure": "Graph",
-     "rel": ["notes/graph_traversal.md", "knowledge/dfsbfs.md", "knowledge/graphds.md"]},
+     "rel": ["notes/graph_traversal.md", "knowledge/dfsbfs.md", "knowledge/graphds.md", "notes/graph_storage.md"]},
 
     # ---- 并查集 ----
     {"q": "并查集怎么实现，路径压缩是什么",
      "structure": "UFDS",
-     "rel": ["knowledge/ufds.md"]},
+     "rel": ["knowledge/ufds.md", "notes/ufds_path_compression.md", "notes/ufds_union_by_rank.md"]},
 
     # ---- 跨结构 / 通用问题（structure="" 不做结构过滤）----
     {"q": "链表和数组有什么区别",
@@ -92,12 +92,12 @@ QUERIES = [
              "generated/SinglyLinkedList.md", "generated/DoublyLinkedList.md"]},
     {"q": "常见的排序算法时间复杂度是多少",
      "structure": "",
-     "rel": ["knowledge/sorting.md", "knowledge/heap.md", "knowledge/segmenttree.md"]},
+     "rel": ["knowledge/sorting.md", "knowledge/heap.md", "knowledge/segmenttree.md", "notes/sorting_comparison.md"]},
     {"q": "堆排序怎么利用堆来完成排序",
      "structure": "",
-     "rel": ["knowledge/heap.md", "notes/heapify.md", "generated/MinHeap.md"]},
+     "rel": ["knowledge/heap.md", "notes/heapify.md", "generated/MinHeap.md", "notes/heap_topk.md"]},
     {"q": "AVL树和红黑树有什么区别，各自适合什么场景",
      "structure": "",
      "rel": ["generated/AVLTree.md", "generated/RedBlackTree.md", "notes/avl_rotation.md",
-             "notes/avl_vs_rbtree.md"]},
+             "notes/avl_vs_rbtree.md", "notes/rbtree_why_weak_balance.md"]},
 ]

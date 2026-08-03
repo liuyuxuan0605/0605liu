@@ -40,7 +40,7 @@ NEW_QUERIES = [
     # ========== 原 21 条未覆盖的结构 ==========
     {"q": "栈和队列有什么区别，分别什么场景用",
      "structure": "",
-     "rel": ["generated/Stack.md", "generated/Queue.md", "knowledge/list.md"]},
+     "rel": ["generated/Stack.md", "generated/Queue.md", "knowledge/list.md", "notes/stack_vs_queue.md"]},
 
     {"q": "双端队列两端都能进出是怎么实现的",
      "structure": "Deque",
@@ -56,28 +56,28 @@ NEW_QUERIES = [
 
     {"q": "环形缓冲区满了之后新数据会怎样",
      "structure": "RingBuffer",
-     "rel": ["notes/ringbuffer_impl.md", "generated/RingBuffer.md"]},
+     "rel": ["notes/ringbuffer_impl.md", "generated/RingBuffer.md", "notes/ring_buffer.md"]},
 
     {"q": "阻塞队列在多线程里是怎么等待和唤醒的",
      "structure": "BlockingQueue",
-     "rel": ["notes/blockingqueue_impl.md", "generated/BlockingQueue.md", "generated/Queue.md"]},
+     "rel": ["notes/blockingqueue_impl.md", "generated/BlockingQueue.md", "generated/Queue.md", "notes/blocking_queue.md"]},
 
     {"q": "循环队列怎么判断是满还是空",
      "structure": "CircularQueue",
-     "rel": ["notes/circularqueue_impl.md", "generated/CircularQueue.md", "generated/Queue.md"]},
+     "rel": ["notes/circularqueue_impl.md", "generated/CircularQueue.md", "generated/Queue.md", "notes/circular_queue_empty_full.md"]},
 
     # ========== 图算法进阶 ==========
     {"q": "Dijkstra求最短路为什么不能有负权边",
      "structure": "Graph",
-     "rel": ["knowledge/sssp.md", "knowledge/graphds.md", "generated/Graph.md"]},
+     "rel": ["knowledge/sssp.md", "knowledge/graphds.md", "generated/Graph.md", "notes/dijkstra.md", "notes/bellman_ford_negative_edge.md"]},
 
     {"q": "最小生成树的Kruskal和Prim算法怎么选",
      "structure": "Graph",
-     "rel": ["knowledge/mst.md", "knowledge/graphds.md", "generated/Graph.md"]},
+     "rel": ["knowledge/mst.md", "knowledge/graphds.md", "generated/Graph.md", "notes/mst_kruskal_prim.md"]},
 
     {"q": "怎么判断图里有没有环",
      "structure": "Graph",
-     "rel": ["knowledge/cyclefinding.md", "knowledge/dfsbfs.md", "generated/Graph.md"]},
+     "rel": ["knowledge/cyclefinding.md", "knowledge/dfsbfs.md", "generated/Graph.md", "notes/topological_sort.md"]},
 
     # ========== 高级结构 ==========
     {"q": "线段树怎么做区间查询和单点更新",
@@ -86,13 +86,13 @@ NEW_QUERIES = [
 
     {"q": "树状数组和线段树比有什么优劣",
      "structure": "",
-     "rel": ["knowledge/fenwicktree.md", "knowledge/segmenttree.md"]},
+     "rel": ["knowledge/fenwicktree.md", "knowledge/segmenttree.md", "notes/segment_tree_vs_bit.md"]},
 
     # ========== 跨结构对比 & 选型 ==========
     {"q": "什么时候该用哈希表什么时候该用平衡树",
      "structure": "",
      "rel": ["knowledge/hashtable.md", "generated/HashMap.md",
-             "generated/AVLTree.md", "generated/RedBlackTree.md"]},
+             "generated/AVLTree.md", "generated/RedBlackTree.md", "notes/data_structure_selection.md"]},
 
     {"q": "B+树为什么比B树更适合做数据库索引",
      "structure": "BPlusTree",
@@ -104,22 +104,22 @@ NEW_QUERIES = [
 
     {"q": "优先队列和普通队列有什么区别，底层是不是堆",
      "structure": "",
-     "rel": ["knowledge/heap.md", "generated/MinHeap.md", "generated/Queue.md"]},
+     "rel": ["knowledge/heap.md", "generated/MinHeap.md", "generated/Queue.md", "notes/heap_topk.md", "notes/stack_vs_queue.md"]},
 
     # ========== 复杂度 / 分析类 ==========
     {"q": "红黑树和AVL树查找的最坏时间复杂度分别是多少",
      "structure": "",
      "rel": ["notes/avl_vs_rbtree.md", "generated/AVLTree.md",
-             "generated/RedBlackTree.md", "interview/complexity_analysis.md"]},
+             "generated/RedBlackTree.md", "interview/complexity_analysis.md", "notes/rbtree_why_weak_balance.md"]},
 
     {"q": "哈希表平均O(1)但最坏情况是什么，为什么会退化",
      "structure": "HashMap",
      "rel": ["notes/hash_collision.md", "knowledge/hashtable.md",
-             "generated/HashMap.md", "interview/complexity_analysis.md"]},
+             "generated/HashMap.md", "interview/complexity_analysis.md", "notes/hash_table_worst_case.md"]},
 
     {"q": "各种排序算法哪些是稳定的哪些不稳定",
      "structure": "",
-     "rel": ["knowledge/sorting.md", "interview/complexity_analysis.md"]},
+     "rel": ["knowledge/sorting.md", "interview/complexity_analysis.md", "notes/sorting_comparison.md"]},
 
     # ========== 边界 / 陷阱 / "如果…会怎样" ==========
     {"q": "AVL树如果连续插入1到7会发生什么，最终长什么样",
@@ -132,11 +132,11 @@ NEW_QUERIES = [
 
     {"q": "BST如果按顺序插入1234567会退化成什么",
      "structure": "BinarySearchTree",
-     "rel": ["generated/BinarySearchTree.md", "knowledge/bst.md", "notes/bst_insert.md"]},
+     "rel": ["generated/BinarySearchTree.md", "knowledge/bst.md", "notes/bst_insert.md", "notes/bst_degenerate_successor.md"]},
 
     {"q": "LRU缓存如果容量设成1会怎样",
      "structure": "LRUCache",
-     "rel": ["notes/lru_mechanism.md", "generated/LRUCache.md"]},
+     "rel": ["notes/lru_mechanism.md", "generated/LRUCache.md", "notes/lru_design_edge_cases.md"]},
 
     # ========== 递归 / 通用算法思想 ==========
     {"q": "递归和迭代有什么区别，什么时候必须用递归",

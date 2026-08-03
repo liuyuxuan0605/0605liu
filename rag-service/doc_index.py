@@ -68,13 +68,19 @@ def compute_sync_plan(data_dir, manifest):
     返回:
         {
           "rechunk": {doc_id: [chunk, ...]},   # 新增或修改 → 需重切重嵌
-          "remove":  {doc_id: [chunk_id, ...]}, # 磁盘消失 → 需清旧向量
+          "remove":  {doc_id: [chunk_id, ...]}, # 修改或删除 → 需清旧向量
           "new_manifest": {doc_id: {mtime, hash, chunk_ids}},
         }
     rechunk 里的 chunk 已带稳定 id（sanitize(source)+"_"+i），retriever 直接用于
     增量 add；remove 里是旧 chunk_ids，retriever 直接用于增量 delete。
+
+    ⚠️ **修改的文档同时出现在 remove 和 rechunk 里**，这是「先删后增」语义的关键，
+    不是冗余。原始文档与 chunk 是一对多关系：内容一改，切分结果的数量/边界/内容
+    可能完全不同，无法逐条 update，只能整篇先清后建。漏掉这一支会同时产生三个
+    静默错误（详见下方真变化分支的注释）。
     """
     rechunk = {}
+    remove = {}
     new_manifest = {}
     seen = set()
 
@@ -104,6 +110,18 @@ def compute_sync_plan(data_dir, manifest):
 
             # —— 真变化（新增或修改）→ 重切 ——
             chunks = chunk_file(fp, data_dir)
+            if old is not None:
+                # 【修改】必须先清掉这篇文档的**全部**旧 chunk，再入新的。
+                # 少了这一句会同时踩三个静默坑（均已实测确认）：
+                #   ① chromadb 1.5.9 同 id 再 add 是「静默忽略」而非覆盖 —— 不抛异常、
+                #      不告警、count 不变，库里留着旧向量，改动完全不生效；
+                #   ② Naive/Semantic 是 list 追加 —— 同一段话的新旧两版并存、id 重复，
+                #      检索会同时命中两个版本；
+                #   ③ 文档「改小」时（如 5 段删成 3 段）旧的 _3/_4 无人清理，成为永久
+                #      孤儿向量 —— 已经从文档里删掉的内容仍能被检索到。
+                # 注意取的是 old（manifest 里的旧 id 列表）而非新 chunks 的 id：
+                # 段落增删会让 _i 位置编号整体平移，只删「新 id」清不干净旧的尾巴。
+                remove[doc_id] = old.get("chunk_ids", [])
             new_manifest[doc_id] = {
                 "mtime": mtime,
                 "hash": h,
@@ -112,7 +130,6 @@ def compute_sync_plan(data_dir, manifest):
             rechunk[doc_id] = chunks
 
     # —— 磁盘消失的文档 → removed（取其旧 chunk_ids）——
-    remove = {}
     for doc_id, old in manifest.items():
         if doc_id not in seen:
             remove[doc_id] = old.get("chunk_ids", [])

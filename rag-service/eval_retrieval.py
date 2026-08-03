@@ -27,6 +27,8 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from chunks import load_chunks, SUBDIRS
 from retriever import build_retriever, NaiveRetriever
+from hybrid import hybrid_search
+from llm import rewrite_query
 from config import (
     RETRIEVER, OPENAI_API_KEY, OPENAI_BASE_URL, OPENAI_MODEL,
     DATA_DIR, INDEX_PATH, EMBEDDING_MODEL,
@@ -68,11 +70,12 @@ def build_eval_retriever(kind):
         r = NaiveRetriever()
         # 关键：与 server.py 一致——索引缺失/过期时重建，否则会吃到陈旧、不完整的索引
         #（之前磁盘上的 naive_index.pkl 缺少若干 notes 文件，导致大量结构过滤查询误判为空、回退全库）。
-        if os.path.exists(INDEX_PATH) and not _naive_stale():
-            r.load(INDEX_PATH)
+        # load() 返回 False = 语料目录集（SUBDIRS）已变，旧索引口径不同 → 必须重建
+        if (os.path.exists(INDEX_PATH) and not _naive_stale()
+                and r.load(INDEX_PATH)):
             print(f"[eval] loaded naive index ({len(r.docs)} docs)", flush=True)
         else:
-            reason = "缺失" if not os.path.exists(INDEX_PATH) else "过期"
+            reason = "缺失" if not os.path.exists(INDEX_PATH) else "过期或语料目录集已变"
             print(f"[eval] naive index{reason}，离线重建中（数秒）...", flush=True)
             r.add(load_chunks(DATA_DIR))
             r.save(INDEX_PATH)
@@ -110,11 +113,30 @@ def rel_rank(hits, rel_sources):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--retriever", default="naive",
-                    choices=["naive", "semantic", "chroma"])
+                    choices=["naive", "semantic", "chroma", "hybrid"])
     ap.add_argument("--k", nargs="+", type=int, default=[1, 3, 5, 8])
+    ap.add_argument("--no-rewrite", action="store_true",
+                    help="hybrid 模式下禁用向量路查询改写（省 API 调用）")
     args = ap.parse_args()
 
-    retr = build_eval_retriever(args.retriever)
+    # hybrid 模式：同时构建向量路 + 关键词路，走 RRF 融合（与生产 server.py 一致）
+    if args.retriever == "hybrid":
+        vec_retr = build_eval_retriever("chroma")
+        kw_retr = build_eval_retriever("naive")
+        retr = None  # 标记走 hybrid 路径
+        rewrite_fn = None
+        if not args.no_rewrite and OPENAI_API_KEY:
+            def rewrite_fn(q, ctx):
+                return rewrite_query(
+                    q, ctx,
+                    api_key=OPENAI_API_KEY, base_url=OPENAI_BASE_URL, model=OPENAI_MODEL,
+                )
+    else:
+        vec_retr = None
+        kw_retr = None
+        retr = build_eval_retriever(args.retriever)
+        rewrite_fn = None
+
     ks = sorted(set(args.k))
     K = max(ks + [8]) + 1   # 拉满排名用于准确计算 MRR（排名不受截断影响）
 
@@ -125,7 +147,13 @@ def main():
     for item in QUERIES:
         q = item["q"]
         struct = item["structure"] or None
-        hits = retr.query(q, k=K, structure=struct)
+        if args.retriever == "hybrid":
+            hits = hybrid_search(
+                q, vec_retr, kw_retr, k=K,
+                structure=struct, context=None, rewrite_fn=rewrite_fn,
+            )
+        else:
+            hits = retr.query(q, k=K, structure=struct)
         rank = rel_rank(hits, item["rel"])
         top5 = [str(h.metadata.get("source", "")).replace("\\", "/") for h in hits[:5]]
         rows.append((q, struct, rank, top5))
