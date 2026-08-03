@@ -41,6 +41,10 @@ round4_fixes.md
 round5_fixes.md
 overview.md
 AI讲解模块功能文档.md
+step_explain_overview.md
+DSVisualizer_conversation_memory.md
+rag-service/INCREMENTAL_MODIFY_FIX.md
+rag-service/INTENT_CLASSIFICATION_FIX.md
 
 # === 排除：调试/探针脚本（非应用代码）===
 bplus_debug.py

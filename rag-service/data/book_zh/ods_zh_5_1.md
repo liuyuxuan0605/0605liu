@@ -10,7 +10,7 @@ kind: textbook
 # 5.1 链式哈希表：使用链式法的哈希
 
 链式哈希表数据结构使用 hashing with chaining 将数据存储为一个列表数
-组 t。一个整数 n 用于跟踪所有列表中的项目总数（见图 5.1）：
+组 t。一个整数 n 用于跟踪所有列表中的项目总数（见图 5.1）： 
 ChainedHashTable
 List<T>[] t;
 int n;
