@@ -54,6 +54,10 @@ private:
     bool m_dark = false;
     bool m_waiting = false;
 
+    // 方案1：多轮对话记忆（仅本次会话内，最近若干轮 Q&A，关掉重开即清空）
+    QJsonArray m_history;        // 累积的 {question, answer} 轮次
+    QString m_pendingQuestion;   // 当前等待回复的用户问题（仅用户主动提问时设置）
+
     // step_explain 多步演示排队状态
     QJsonArray m_stepQueue;
     int m_stepIndex = 0;

@@ -16,6 +16,7 @@
 #include <QByteArray>
 #include <QScrollBar>
 #include <QRegularExpression>
+#include <QDebug>
 #include <map>
 #include <set>
 #include <functional>
@@ -402,8 +403,11 @@ void AIChatPlugin::onAskClicked() {
 
 void AIChatPlugin::postAsk(const QString& question, const QJsonObject& ctx, bool autoFollow) {
     // autoFollow：步骤自动跟随的提问不明确时，不打用户气泡，只显示思考指示
-    if (!autoFollow)
+    if (!autoFollow) {
         appendBubble("你", "#4A90E2", question, /*userSide=*/true);
+        // 记录为待回复的用户问题；回复到达后写入 m_history（多轮记忆）
+        m_pendingQuestion = question;
+    }
 
     m_waiting = true;
     m_statusLabel->setText("● 正在思考…");
@@ -412,6 +416,8 @@ void AIChatPlugin::postAsk(const QString& question, const QJsonObject& ctx, bool
     QJsonObject body;
     body["question"] = question;
     body["context"] = ctx;
+    // 方案1：把已累积的对话历史带上，供后端理解追问指代（如“它/这个/刚才说的”）
+    body["history"] = m_history;
     QNetworkRequest req = QNetworkRequest(QUrl(m_endpoint));
     req.setHeader(QNetworkRequest::ContentTypeHeader, "application/json");
     m_net->post(req, QJsonDocument(body).toJson());
@@ -433,8 +439,61 @@ void AIChatPlugin::onReply(QNetworkReply* reply) {
     }
     m_statusLabel->setText("● 已连接 RAG");
 
-    QJsonObject obj = QJsonDocument::fromJson(reply->readAll()).object();
-    appendBubble("AI", "#0F6E56", obj.value("answer").toString(), /*userSide=*/false);
+    QByteArray raw = reply->readAll();
+    QString rawStr = QString::fromUtf8(raw).trimmed();
+
+    // 健壮性增强（对应简历「高亮 JSON 解析失败 fallback 正则抽取」）：
+    // 1) 先剥离 ```json / ``` 代码块围栏（LLM 常见包裹导致 fromJson 失败）；
+    // 2) 仍失败则用正则抽取 highlight_nodes，保证节点高亮不丢。
+    QString stripped = rawStr;
+    stripped.remove(QRegularExpression(R"(^```[a-zA-Z]*\s*\n?)"));
+    stripped.remove(QRegularExpression(R"(\n?```\s*$)"));
+
+    QJsonParseError perr;
+    QJsonDocument doc = QJsonDocument::fromJson(stripped.toUtf8(), &perr);
+    QJsonObject obj;
+    if (doc.isObject()) {
+        obj = doc.object();
+    } else {
+        obj = QJsonObject();
+        QRegularExpression hlRe(R"("highlight_nodes"\s*:\s*\[([^\]]*)\])");
+        QRegularExpressionMatch hlMatch = hlRe.match(rawStr);
+        if (hlMatch.hasMatch()) {
+            QJsonArray arr;
+            QString nums = hlMatch.captured(1);
+            QRegularExpression numRe("(?:-?\\d+(?:\\.\\d+)?)");
+            QRegularExpressionMatchIterator it = numRe.globalMatch(nums);
+            while (it.hasNext()) {
+                arr.append(it.next().captured(0).toDouble());
+            }
+            obj["highlight_nodes"] = arr;
+            appendBubble("AI", "#C0392B",
+                         "⚠️ 回答 JSON 解析部分失败，已通过正则兜底恢复 "
+                         + QString::number(arr.size()) + " 个节点高亮。",
+                         /*userSide=*/false);
+        } else {
+            appendBubble("AI", "#C0392B",
+                         "⚠️ 回答 JSON 解析失败，且无高亮信息可恢复。",
+                         /*userSide=*/false);
+        }
+        qDebug() << "[AIChatPlugin] reply JSON 解析失败，已走正则兜底："
+                 << perr.errorString();
+    }
+    QString ans = obj.value("answer").toString();
+    appendBubble("AI", "#0F6E56", ans, /*userSide=*/false);
+
+    // 方案1：把本轮用户问题 + AI 回答写入多轮记忆（仅用户主动提问才记录，自动演示/跳转不记）
+    if (!m_pendingQuestion.isEmpty()) {
+        if (!ans.isEmpty()) {
+            QJsonObject turn;
+            turn["question"] = m_pendingQuestion;
+            turn["answer"] = ans;
+            m_history.append(turn);
+            // 仅保留最近 6 轮，避免 prompt 无限膨胀
+            while (m_history.size() > 6) m_history.removeAt(0);
+        }
+        m_pendingQuestion.clear();
+    }
 
     // 高亮联动：把返回的节点值高亮到图上
     QVariantList hl = obj.value("highlight_nodes").toArray().toVariantList();
