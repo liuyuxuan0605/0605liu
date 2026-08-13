@@ -2,6 +2,11 @@
 """用 pdfplumber + PDF 书签层级，把中文版《Open Data Structures》(DataBook-mono.pdf)
 切成**语义完整**的 Markdown 片段，产物入 data/book_zh/。
 
+⚠️ 维护约定（review S9）：本文件与 extract_pdf_plumber.py 是同源拷贝（相似度 ~0.8），
+均为一次性语料生成脚本，语料已产出并入索引。不抽公共基模块（对一次性脚本是过度设计），
+也不再双份维护：若需重新生成语料，以**本文件（中文版）为准**修改——book_zh/ 是当前
+主语料；英文版脚本仅作历史参考保留，不要同步改它。
+
 与英文版 extract_pdf_plumber.py 同源，关键差异只在「标题怎么找」：
 - 英文 PDF 书签标题与正文标题同语言，用 `norm(标题)` 在正文做字符级匹配即可。
 - 中文 PDF 的**书签标题是英文**（如 `1.2.1 The Queue, Stack, and Deque Interfaces`），

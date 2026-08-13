@@ -40,7 +40,10 @@ def _env(name, default=""):
 
 
 # retriever: naive(零依赖, 开箱即跑) | semantic(pickle+内存余弦) | chroma(真·向量数据库, 需 OPENAI_API_KEY 做嵌入)
-RETRIEVER = _env("RETRIEVER", "naive")
+# 默认 chroma：生产架构 = hybrid 双路（向量 + 关键词 BM25 经 RRF 融合）。
+# 无 key / chromadb 缺失时经 build_retriever 与 server 降级链自动落到 naive 单路，
+# 离线可用性由降级链保证（chroma → semantic → naive），而非靠默认值保守。
+RETRIEVER = _env("RETRIEVER", "chroma")
 OPENAI_API_KEY = _env("OPENAI_API_KEY", "")
 OPENAI_BASE_URL = _env("OPENAI_BASE_URL", "https://api.openai.com/v1")
 OPENAI_MODEL = _env("OPENAI_MODEL", "gpt-4o-mini")
@@ -53,6 +56,13 @@ LLM_PROVIDER = _env("LLM_PROVIDER", "offline")
 if not _LLM_PROVIDER_EXPLICIT and OPENAI_API_KEY:
     LLM_PROVIDER = "openai"
 PORT = int(_env("PORT", "8000"))
+
+# 范围收敛开关（review S6）：默认关闭，需要时显式开启。
+# QUERY_TRANSLATE：查询中译英跨语言对齐。中文语料（book/ 已隐藏）下是死路，
+#   且每次查询白烧一次 LLM 调用；设 RAG_QUERY_TRANSLATE=1 开启。
+QUERY_TRANSLATE = _env("RAG_QUERY_TRANSLATE", "0") == "1"
+# QUERY_REWRITE：Direct Query Rewrite（口语→规范术语）。设 RAG_QUERY_REWRITE=1 开启。
+QUERY_REWRITE = _env("RAG_QUERY_REWRITE", "0") == "1"
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 DATA_DIR = os.path.join(BASE_DIR, "data")

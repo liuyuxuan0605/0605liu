@@ -8,15 +8,20 @@ import re
 import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from llm import _is_analyze_operation, build_prompt
+from llm import (
+    _is_analyze_operation, build_prompt, classify_intent, Intent,
+    _enforce_intent_contract, _should_reject, _valid_highlights,
+    _DEMO_KWS, _EXEC_KWS, _DEMO_EXEC_KWS,
+)
 
 
 class FakeHit:
     """模拟检索命中的最小对象。"""
-    def __init__(self, text, source="test.md", structure="AVLTree", score=0.9):
+    def __init__(self, text, source="test.md", structure="AVLTree", score=0.9, q_match=True):
         self.text = text
         self.metadata = {"source": source, "structure": structure}
         self.score = score
+        self.q_match = q_match
 
 
 def prompt_hints(question):
@@ -111,6 +116,78 @@ class PromptHintTests(unittest.TestCase):
         self.assertTrue(h["analyze"])
         self.assertFalse(h["run"])
         self.assertFalse(h["demo"])
+
+
+class IntentEnumTests(unittest.TestCase):
+    """S7/S15：关键词集合单一来源 + Intent 枚举分类。"""
+
+    def test_keyword_sets_single_source(self):
+        # _DEMO_EXEC_KWS 必须由 _DEMO_KWS + _EXEC_KWS 组成，防再分叉
+        self.assertEqual(set(_DEMO_EXEC_KWS), set(_DEMO_KWS) | set(_EXEC_KWS))
+
+    def test_classify_intent_enum(self):
+        self.assertEqual(classify_intent("演示插入8"), Intent.DEMO)
+        self.assertEqual(classify_intent("插入8会怎样"), Intent.ANALYZE)
+        self.assertEqual(classify_intent("插入8"), Intent.EXECUTE)
+        self.assertEqual(classify_intent("什么是红黑树"), Intent.NONE)
+
+    def test_is_analyze_consistent_with_classify(self):
+        for q in ("插入8会怎样", "插入8", "演示插入8", "什么是栈"):
+            self.assertEqual(
+                _is_analyze_operation(q),
+                classify_intent(q) == Intent.ANALYZE,
+            )
+
+
+class ContractTests(unittest.TestCase):
+    """服务端契约：意图锁死 / 分路门控 / 高亮校验（不依赖 LLM，纯函数测试）。"""
+
+    # ---- S1：分析类问题 → actions 不含 run_operation/step_explain ----
+    def test_analyze_strips_run_operation(self):
+        actions = [{"type": "run_operation", "op": "insert", "value": "8"}]
+        self.assertEqual(_enforce_intent_contract("插入8会怎样", actions), [])
+
+    def test_analyze_strips_step_explain(self):
+        actions = [{"type": "step_explain", "structure": "AVLTree",
+                    "steps": [{"op": "insert", "value": "8"}]}]
+        self.assertEqual(_enforce_intent_contract("插入8会导致什么", actions), [])
+
+    def test_analyze_keeps_jump(self):
+        # jump 是结构切换，不是"执行操作"，分析类保留
+        actions = [{"type": "jump", "structure": "RedBlackTree"}]
+        self.assertEqual(_enforce_intent_contract("插入8会怎样", actions), actions)
+
+    def test_execute_not_stripped(self):
+        actions = [{"type": "run_operation", "op": "insert", "value": "8"}]
+        self.assertEqual(_enforce_intent_contract("插入8", actions), actions)
+        self.assertEqual(_enforce_intent_contract("演示插入8", actions), actions)
+
+    # ---- S2：分路门控 ----
+    def test_naive_gate_uses_q_match(self):
+        # naive 路：score 再高，q_match 全 False 也应拒答（BM25 分数无界，阈值无意义）
+        hits = [FakeHit("x", score=99.0, q_match=False) for _ in range(3)]
+        self.assertTrue(_should_reject(hits, "naive"))
+        hits_ok = [FakeHit("x", score=0.1, q_match=True)] + [FakeHit("y", q_match=False)]
+        self.assertFalse(_should_reject(hits_ok, "naive"))
+
+    def test_vector_gate_uses_threshold(self):
+        # vector 路：低于 0.4 硬拒，高于则放行（与 q_match 无关）
+        self.assertTrue(_should_reject([FakeHit("x", score=0.3)], "vector"))
+        self.assertFalse(_should_reject([FakeHit("x", score=0.6)], "vector"))
+
+    def test_empty_hits_rejected_both_kinds(self):
+        self.assertTrue(_should_reject([], "naive"))
+        self.assertTrue(_should_reject([], "vector"))
+
+    # ---- S3：highlight_nodes 与 context 真实节点求交 ----
+    def test_highlight_filtered_by_context(self):
+        ctx = {"tree_state": "1 2 3"}
+        # 请求高亮 99（不存在）→ 被过滤；2（存在）→ 保留
+        self.assertEqual(_valid_highlights("节点 2 和 99 的关系", ctx), [2])
+
+    def test_highlight_empty_without_tree_state(self):
+        self.assertEqual(_valid_highlights("插入 8 会怎样", {}), [])
+        self.assertEqual(_valid_highlights("插入 8 会怎样", {"tree_state": ""}), [])
 
 
 if __name__ == "__main__":

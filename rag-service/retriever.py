@@ -12,6 +12,8 @@ import urllib.error
 # （曾经四处硬编码 ("interview","notes","generated","open","knowledge")，
 # 新增 book/ 时极易漏改导致索引不刷新）。chunks 只依赖 stdlib，无循环导入。
 from chunks import SUBDIRS, subdirs_signature
+from config import QUERY_TRANSLATE
+from doc_index import flatten_chunk_ids
 
 # 相关性阈值：chroma/semantic 的余弦相似度 >= 此值才视为"有相关命中"。
 # 用于让 q_match 在向量检索路径上也是真实信号（原先硬编码 True，
@@ -135,7 +137,11 @@ def _translate_to_english(text, api_key, base_url, chat_model):
     - 翻译失败（网络/key/模型问题）一律回退 None，绝不阻断检索。
     - 复用 DashScope OpenAI 兼容 /chat/completions 端点（与 llm.py 同源），
       纯标准库 urllib，不引入新依赖。
+    - 范围收敛（review S6）：默认关闭。当前语料全中文（英文 book/ 已隐藏），
+      翻译对白浪费一次 LLM 调用；config.QUERY_TRANSLATE（RAG_QUERY_TRANSLATE=1）开启。
     """
+    if not QUERY_TRANSLATE:
+        return None
     if not api_key or not chat_model:
         return None
     if not re.search(r"[\u4e00-\u9fff]", text):
@@ -231,7 +237,12 @@ class NaiveRetriever(BaseRetriever):
         self._b = 0.75
 
     def add(self, chunks, force=False):
-        """全量装载。naive 路纯本地计算、零 API 成本，故不做缓存复用，总是重建。"""
+        """全量装载。naive 路纯本地计算、零 API 成本，故不做缓存复用，总是重建并返回 True。
+
+        注意（review S14）：force 参数在此刻意无效，与 Semantic/Chroma 的 force 语义不同——
+        这是有意设计，因为 BM25 重建零成本；server._index_retriever 依赖 naive.add 恒返回 True
+        来触发 save，不依赖 force 控制复用。保留 force 仅为与基类/兄弟类接口一致。
+        """
         self.docs = [(c["terms"], c["text"], c["metadata"]) for c in chunks]
         self._cids = [c["id"] for c in chunks]
         self._build_stats()
@@ -239,13 +250,12 @@ class NaiveRetriever(BaseRetriever):
 
     def sync(self, rechunk, remove):
         """增量：清掉 remove 里的旧 chunk 向量，追加 rechunk 里的新 chunk。"""
-        removed = set()
-        for ids in remove.values():
-            removed.update(ids)
+        to_remove, to_add = flatten_chunk_ids(rechunk, remove)
+        removed = set(to_remove)
         kept = [(d, cid) for d, cid in zip(self.docs, self._cids) if cid not in removed]
         self.docs = [d for d, _ in kept]
         self._cids = [c for _, c in kept]
-        for c in (ch for chunks in rechunk.values() for ch in chunks):
+        for c in to_add:
             self.docs.append((c["terms"], c["text"], c["metadata"]))
             self._cids.append(c["id"])
         self._build_stats()
@@ -566,9 +576,8 @@ class SemanticRetriever(BaseRetriever):
 
     def sync(self, rechunk, remove):
         """增量：删 remove 里的旧 chunk 向量，重嵌 rechunk 里的新 chunk（只耗变更部分 API）。"""
-        removed = set()
-        for ids in remove.values():
-            removed.update(ids)
+        to_remove, to_add = flatten_chunk_ids(rechunk, remove)
+        removed = set(to_remove)
         keep = [(d, v, s, i) for d, v, s, i in
                 zip(self._docs, self._vecs, self._structs, self._ids)
                 if i not in removed]
@@ -576,7 +585,7 @@ class SemanticRetriever(BaseRetriever):
             self._docs, self._vecs, self._structs, self._ids = map(list, zip(*keep))
         else:
             self._docs, self._vecs, self._structs, self._ids = [], [], [], []
-        new = [c for chunks in rechunk.values() for c in chunks]
+        new = to_add
         if new:
             # 首次成功嵌入后 _dim 已定；若仅从缓存加载未设 _dim，用现有向量维补上
             if self._dim is None and self._vecs:
@@ -809,11 +818,10 @@ class ChromaRetriever(BaseRetriever):
         remove（旧 chunk_ids）和 rechunk（新 chunks），先清后建才能保证段落增删后
         不留孤儿向量。
         """
-        removed = [cid for ids in remove.values() for cid in ids]
+        removed, new = flatten_chunk_ids(rechunk, remove)
         if removed:
             # chromadb 1.5.x 不允许 delete(ids=[]) 空列表，先判空
             self._coll.delete(ids=removed)
-        new = [c for chunks in rechunk.values() for c in chunks]
         if new:
             ids = [c["id"] for c in new]
             docs = [c["text"] for c in new]

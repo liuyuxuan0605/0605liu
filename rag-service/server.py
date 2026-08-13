@@ -20,7 +20,7 @@ from llm import call_llm, rewrite_query
 from hybrid import hybrid_search
 from config import (
     RETRIEVER, LLM_PROVIDER, OPENAI_API_KEY, OPENAI_BASE_URL, OPENAI_MODEL,
-    DATA_DIR, INDEX_PATH, EMBEDDING_MODEL, PORT,
+    DATA_DIR, INDEX_PATH, EMBEDDING_MODEL, PORT, QUERY_REWRITE,
 )
 
 print("building retriever ...", flush=True)
@@ -75,10 +75,27 @@ try:
     )
     _index_retriever(_retriever, _chunks, _plan, _first_run)
 except Exception as e:  # noqa: BLE001
-    # 语义/向量检索失败（如 key 无效 / 网络不可达 / 嵌入函数不兼容），降级为关键词检索，保证服务可用
-    print(f"[WARN] {RETRIEVER} 检索构建失败（{e}），降级为 naive 关键词检索", flush=True)
-    _retriever = NaiveRetriever()
-    _index_retriever(_retriever, _chunks, _plan, _first_run)
+    # 三级降级链（有 key 前提下）：chroma 构建失败 → semantic 离线语义档（pickle+内存余弦）→ naive。
+    # 此前 chroma 一失败就直接跳 naive，丢失中间档；semantic 只需 key 做查询嵌入，
+    # 不依赖 chromadb 包，是 chroma 与纯关键词之间的真实中间档。
+    print(f"[WARN] {RETRIEVER} 检索构建失败（{e}）", flush=True)
+    _retriever = None
+    if RETRIEVER == "chroma" and OPENAI_API_KEY:
+        try:
+            print("[WARN] 降级为 semantic 语义缓存档（pickle+内存余弦）", flush=True)
+            _retriever = build_retriever(
+                "semantic", EMBEDDING_MODEL,
+                api_key=OPENAI_API_KEY, base_url=OPENAI_BASE_URL, data_dir=DATA_DIR,
+                chat_model=OPENAI_MODEL,
+            )
+            _index_retriever(_retriever, _chunks, _plan, _first_run)
+        except Exception as e2:  # noqa: BLE001
+            print(f"[WARN] semantic 中间档也失败（{e2}），继续降级", flush=True)
+            _retriever = None
+    if _retriever is None:
+        print("[WARN] 降级为 naive 关键词检索", flush=True)
+        _retriever = NaiveRetriever()
+        _index_retriever(_retriever, _chunks, _plan, _first_run)
 print(f"retriever={RETRIEVER} llm={LLM_PROVIDER} embedding={EMBEDDING_MODEL}", flush=True)
 
 # ---- hybrid 检索：向量路(_retriever) + 关键词路(_kw, BM25) 经 RRF 合并 ----
@@ -131,7 +148,13 @@ if RETRIEVER in ("semantic", "chroma") and not OPENAI_API_KEY:
 
 
 def _rewrite_fn(question, context):
-    """向量路查询改写：仅在主路为向量、且 LLM 可用时尝试。"""
+    """向量路查询改写：仅在主路为向量、LLM 可用、且开关开启时尝试。
+
+    范围收敛（review S6）：Direct Query Rewrite 默认关闭（RAG_QUERY_REWRITE=1 开启），
+    避免每次查询多烧一次 LLM 调用；关键词路(BM25)本就带同义词扩展兜底。
+    """
+    if not QUERY_REWRITE:
+        return question
     if _kw is not _retriever and LLM_PROVIDER != "offline" and OPENAI_API_KEY:
         return rewrite_query(
             question, context,
@@ -150,20 +173,13 @@ def answer(question, context, history=None):
     ans, hl, src, actions = call_llm(
         question, hits, context, LLM_PROVIDER, OPENAI_API_KEY, OPENAI_BASE_URL, OPENAI_MODEL,
         history=history,
+        # 分路门控信号：主路为 naive（含降级）时走 q_match 门控，向量/hybrid 走相似度阈值
+        retriever_kind="naive" if isinstance(_retriever, NaiveRetriever) else "vector",
     )
     return {"answer": ans, "highlight_nodes": hl, "sources": src, "actions": actions}
 
 
 class _Handler(BaseHTTPRequestHandler):
-    def _cors(self):
-        self.send_header("Access-Control-Allow-Origin", "*")
-        self.send_header("Access-Control-Allow-Headers", "Content-Type")
-
-    def do_OPTIONS(self):
-        self.send_response(204)
-        self._cors()
-        self.end_headers()
-
     def do_POST(self):
         print("[DEBUG] do_POST entered", file=sys.stderr, flush=True)
         try:
@@ -182,17 +198,10 @@ class _Handler(BaseHTTPRequestHandler):
             raw = self.rfile.read(n)
             print(f"[DEBUG] read {len(raw)} bytes", file=sys.stderr, flush=True)
 
-            # decode: try utf-8 first (Qt client / proper tools),
-            # fall back to gbk (Windows curl sends Chinese in GBK by default)
-            text = None
-            for enc in ("utf-8", "gbk", "latin-1"):
-                try:
-                    text = raw.decode(enc)
-                    break
-                except UnicodeDecodeError:
-                    continue
-            if text is None:
-                text = raw.decode("utf-8", errors="replace")
+            # decode：仅 UTF-8（Qt 客户端与规范工具均发 UTF-8）。
+            # review S6：删除多编码兜底——Qt 客户端用不到；多编码猜测可能
+            # 把合法 UTF-8 误判。若需 Windows curl 调试，请用 -H 显式 UTF-8 或加回兜底。
+            text = raw.decode("utf-8", errors="replace")
             body = json.loads(text if text else "{}")
             question = body.get("question", "")
             context = body.get("context", {})
@@ -204,7 +213,6 @@ class _Handler(BaseHTTPRequestHandler):
             print(f"[DEBUG] answer len={len(data)} highlight={res['highlight_nodes']}", file=sys.stderr, flush=True)
 
             self.send_response(200)
-            self._cors()
             self.send_header("Content-Type", "application/json; charset=utf-8")
             self.send_header("Content-Length", str(len(data)))
             self.end_headers()
@@ -219,7 +227,6 @@ class _Handler(BaseHTTPRequestHandler):
                         "\", \"detail\": \"check server stderr for traceback\"}").encode("ascii", errors="replace")
             try:
                 self.send_response(500)
-                self._cors()
                 self.send_header("Content-Type", "application/json")
                 self.send_header("Content-Length", str(len(err_body)))
                 self.end_headers()

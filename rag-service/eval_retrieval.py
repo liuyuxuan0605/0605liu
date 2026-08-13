@@ -50,54 +50,10 @@ except ImportError:
     pass
 
 
-def _naive_stale():
-    """与 server.py 的 _index_is_stale 对齐：data/ 下任意 .md 比索引新 → 过期。"""
-    if not os.path.exists(INDEX_PATH):
-        return True
-    pk_mtime = os.path.getmtime(INDEX_PATH)
-    for sub in SUBDIRS:
-        d = os.path.join(DATA_DIR, sub)
-        if not os.path.isdir(d):
-            continue
-        for fp in glob.glob(os.path.join(d, "*.md")):
-            if os.path.getmtime(fp) > pk_mtime:
-                return True
-    return False
+# _naive_stale 已移至 eval_common（review S10 单一来源）
 
-
-def build_eval_retriever(kind):
-    if kind == "naive":
-        r = NaiveRetriever()
-        # 关键：与 server.py 一致——索引缺失/过期时重建，否则会吃到陈旧、不完整的索引
-        #（之前磁盘上的 naive_index.pkl 缺少若干 notes 文件，导致大量结构过滤查询误判为空、回退全库）。
-        # load() 返回 False = 语料目录集（SUBDIRS）已变，旧索引口径不同 → 必须重建
-        if (os.path.exists(INDEX_PATH) and not _naive_stale()
-                and r.load(INDEX_PATH)):
-            print(f"[eval] loaded naive index ({len(r.docs)} docs)", flush=True)
-        else:
-            reason = "缺失" if not os.path.exists(INDEX_PATH) else "过期或语料目录集已变"
-            print(f"[eval] naive index{reason}，离线重建中（数秒）...", flush=True)
-            r.add(load_chunks(DATA_DIR))
-            r.save(INDEX_PATH)
-            print(f"[eval] rebuilt naive index ({len(r.docs)} docs)", flush=True)
-        return r
-    if not OPENAI_API_KEY:
-        raise SystemExit(
-            f"[eval] RETRIEVER={kind} 需要 OPENAI_API_KEY + 网络（DashScope 嵌入），"
-            f"本环境未配置。请在本机 .env 配好 key 后用 --retriever {kind} 运行。"
-        )
-    try:
-        r = build_retriever(
-            kind, EMBEDDING_MODEL,
-            api_key=OPENAI_API_KEY, base_url=OPENAI_BASE_URL, data_dir=DATA_DIR,
-            chat_model=OPENAI_MODEL,
-        )
-        # 若已建好缓存/库则直接复用，避免重复耗 API
-        r.add(load_chunks(DATA_DIR))
-        print(f"[eval] built {kind} retriever", flush=True)
-        return r
-    except Exception as e:  # noqa: BLE001
-        raise SystemExit(f"[eval] 构建 {kind} 检索器失败：{e}")
+# build_eval_retriever 抽到 eval_common（review S10 单一来源）
+from eval_common import build_eval_retriever  # noqa: E402
 
 
 def rel_rank(hits, rel_sources):

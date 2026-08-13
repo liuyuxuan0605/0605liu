@@ -101,16 +101,8 @@ def _judge_call(prompt, timeout=30):
 # ============================================================
 # 评测上下文构造：给 Judge 看「整篇来源文档」而非单 chunk 前 800 字
 # ============================================================
-def _source_context(h):
-    """faithfulness / precision 判分时构造喂给 Judge 的上下文。
-
-    标准 RAG：检索命中的小块即作为证据上下文，直接返回该 chunk 原文，
-    不扩展整篇 parent（之前 Parent-Child 的整篇/窗口扩展为非标准做法，已回退）。
-    """
-    t = getattr(h, "text", None)
-    if t is None and isinstance(h, dict):
-        t = h.get("text", "")
-    return t or ""
+# hit→text 单一来源（review S11）：复用 llm._text_of，消除与 llm 维护两份兼容逻辑
+from llm import _text_of as _source_context
 
 
 # ============================================================
@@ -351,30 +343,8 @@ GROUND_TRUTHS = {
 }
 
 
-def build_eval_retriever(kind):
-    """与 eval_retrieval.py 一致的检索器构建逻辑。"""
-    if kind == "naive":
-        r = NaiveRetriever()
-        if os.path.exists(INDEX_PATH):
-            r.load(INDEX_PATH)
-            print(f"[eval-gen] loaded naive index ({len(r.docs)} docs)", flush=True)
-        else:
-            r.add(load_chunks(DATA_DIR))
-            r.save(INDEX_PATH)
-            print(f"[eval-gen] built naive index ({len(r.docs)} docs)", flush=True)
-        return r
-    if not OPENAI_API_KEY:
-        raise SystemExit(
-            f"[eval-gen] RETRIEVER={kind} 需要 OPENAI_API_KEY。"
-            f"请在 .env 配好 key 后用 --retriever {kind} 运行。"
-        )
-    r = build_retriever(
-        kind, EMBEDDING_MODEL,
-        api_key=OPENAI_API_KEY, base_url=OPENAI_BASE_URL, data_dir=DATA_DIR,
-    )
-    r.add(load_chunks(DATA_DIR))
-    print(f"[eval-gen] built {kind} retriever", flush=True)
-    return r
+# build_eval_retriever 抽到 eval_common（review S10 单一来源）
+from eval_common import build_eval_retriever  # noqa: E402
 
 
 def main():

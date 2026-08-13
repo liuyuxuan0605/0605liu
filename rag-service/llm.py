@@ -7,6 +7,7 @@
 import re
 import json
 import urllib.request
+from enum import Enum
 
 # 硬拒阈值：空检索或 top 相似度低于此值 → 直接拒答，不调 LLM。
 # 用于拦截"李白是谁"这类明显离域、但 chroma 仍能捞出 0.25~0.4 弱命中的查询。
@@ -41,14 +42,6 @@ SYSTEM_PROMPT = """你是一个数据结构可视化教学助教，面向正在�
 JSON_INSTRUCTION = '请只输出 JSON，格式：{"answer": "你的讲解", "highlight_nodes": [涉及的整数节点值...], "sources": ["资料来源文件名..."], "actions": []}。其中 actions 规则：① 用户要求切换结构时填 [{"type":"jump","structure":"结构名"}]；② 用户要求分步/逐步/动画演示时**必须**填 [{"type":"step_explain","structure":"结构名","steps":[...]}]，steps 不能为空，且用户未给数值时你要自行选择典型序列；③ 用户给出明确操作词+数值（如"插入 42""push 5""删除 10"）且未要求分步演示时**必须**填 [{"type":"run_operation","structure":"结构名","op":"insert","value":"42"}]（structure 仅目标结构≠当前时填，op 取值同②，value 无值用空串），用于立刻执行。不需要动作时才留空数组 []。'
 
 
-def _src_of(h):
-    """兼容 Hit 对象(dict-like metadata) 与纯 dict 两种 hit，取归一化 source。"""
-    m = getattr(h, "metadata", None)
-    if m is None and isinstance(h, dict):
-        m = h.get("metadata", {})
-    return str((m or {}).get("source", "")).replace("\\", "/")
-
-
 def _text_of(h):
     """兼容 Hit 对象与纯 dict 两种 hit，取 child 文本。"""
     t = getattr(h, "text", None)
@@ -57,13 +50,7 @@ def _text_of(h):
     return t or ""
 
 
-def _passage_text(h):
-    """返回喂给主 LLM 的段落文本（标准 RAG：命中小块即返回该小块本身）。
-
-    不做 Parent-Child 窗口扩展：检索命中的 child chunk 即为上下文单元，
-    直接返回其原文。相邻段的事实靠 top-k 多块召回覆盖。
-    """
-    return _text_of(h)
+# _passage_text 已内联为 _text_of（review S12：中间人透传，无附加逻辑）
 
 
 # 操作词（与 run_hint 保持一致）
@@ -79,27 +66,64 @@ _ANALYZE_KWS = (
     "会旋转", "会失衡", "会变化", "会变", "会触发",
 )
 
-# 演示/执行词：出现这些词则优先走 step_explain / run_operation，不归入分析类。
-# 注意与 build_prompt 里 has_demo_kw 的清单保持一致。
-_DEMO_EXEC_KWS = (
-    "演示", "分步", "逐步", "动画", "讲解", "按顺序", "依次", "walk through", "show me",
-    "执行", "给我", "走一遍", "看一下",
+# —— 意图关键词单一来源（review S7/S15）——
+# 此前演示词表在 build_prompt 里还有一份内联拷贝（且已分叉：多了"顺序"），
+# 现合并为唯一一份，关键词集绑定到 Intent 枚举；任何增删只改这里。
+_DEMO_KWS = (
+    "演示", "分步", "逐步", "动画", "讲解", "按顺序", "依次", "顺序", "walk through", "show me",
 )
+# 执行词：出现则说明用户要"做"而不是"问影响"，用于排除分析类。
+_EXEC_KWS = ("执行", "给我", "走一遍", "看一下")
+# 演示/执行词并集：分析类判定的排除集。
+_DEMO_EXEC_KWS = _DEMO_KWS + _EXEC_KWS
+
+
+class Intent(Enum):
+    """用户意图四分类（review S15：消除字符串/布尔散落的基本类型偏执）。
+
+    判定优先级：DEMO > ANALYZE > EXECUTE > NONE。
+    """
+    DEMO = "demo"        # step_explain：演示/分步/按顺序等演示词
+    ANALYZE = "analyze"  # 会怎样/为什么/分析：只讲解，不执行（actions 锁死为空）
+    EXECUTE = "execute"  # run_operation：操作词+数值，无演示/分析词
+    NONE = "none"        # 普通问答
+
+
+def classify_intent(question):
+    """意图分类（唯一入口）。优先级：演示 > 分析 > 执行 > 普通。"""
+    q = question
+    ql = q.lower()
+    # 演示词优先（演示词不 lower 匹配，与历史 build_prompt 行为一致）
+    if any(kw in q for kw in _DEMO_KWS):
+        return Intent.DEMO
+    if not _OPERATION_RE.search(q):
+        return Intent.NONE
+    has_analyze = any(kw in q for kw in _ANALYZE_KWS)
+    has_demo_exec = any(kw in ql for kw in _DEMO_EXEC_KWS)
+    if has_analyze and not has_demo_exec:
+        return Intent.ANALYZE
+    return Intent.EXECUTE
 
 
 def _is_analyze_operation(question):
-    """判断是否为'分析操作影响/原理/历史过程'类问题。
+    """判断是否为'分析操作影响/原理/历史过程'类问题（classify_intent 的便捷封装）。
 
-    特征：含操作词 + 数值，且含分析语气词，且不含明确演示/执行词。
     例如："插入 8 会导致什么"、"删除 10 会怎样"、"push 5 之后栈怎么变"。
     反例："插入 8"（执行）、"演示插入 8"（分步）、"在 AVL 树里插入 8"（执行）。
     """
-    q = question
-    if not _OPERATION_RE.search(q):
-        return False
-    has_analyze = any(kw in q for kw in _ANALYZE_KWS)
-    has_demo_exec = any(kw in q.lower() for kw in _DEMO_EXEC_KWS)
-    return has_analyze and not has_demo_exec
+    return classify_intent(question) == Intent.ANALYZE
+
+
+def _is_arithmetic_only(question):
+    """意图分类的正式规则之一：纯算术问题（如 5+3=几、1+1=?）直接拒答。
+
+    这类问题的数字是运算数、不是数据结构节点值，不应触发检索高亮或模型计算。
+    归入意图分类体系：与 _is_analyze_operation 平级，由 call_llm 最先判定。
+    """
+    # 去掉空格、常见疑问词和中文标点
+    cleaned = re.sub(r"[等于几是多少多少？?！!，,、；;：:\s]+", "", question)
+    # 清理后必须非空，且只含数字（半角/全角）和运算符
+    return bool(cleaned) and bool(re.fullmatch(r"[\d０-９\.\+\-\*/%=]+", cleaned))
 
 
 def build_prompt(question, hits, context, history=None):
@@ -120,11 +144,11 @@ def build_prompt(question, hits, context, history=None):
     else:
         ctx_text = context if isinstance(context, str) else json.dumps(context, ensure_ascii=False)
 
-    # 多轮对话历史（方案1：前端累积最近 N 轮 Q&A，仅作上下文延续，帮助理解追问指代）
+    # 多轮对话历史（窗口由前端裁剪并 trim，后端直接使用收到的 history，不再自行截断——review S13 单一所有权）
     history_text = ""
     if history:
         items = []
-        for h in history[-6:]:
+        for h in history:
             if not isinstance(h, dict):
                 continue
             q = (h.get("question") or "").strip()
@@ -139,7 +163,7 @@ def build_prompt(question, hits, context, history=None):
             )
 
     knowledge = "\n\n".join(
-        f"[资料 {i+1} | {h.metadata.get('source','')} | {h.metadata.get('structure','')}]\n{_passage_text(h)}"
+        f"[资料 {i+1} | {h.metadata.get('source','')} | {h.metadata.get('structure','')}]\n{_text_of(h)}"
         for i, h in enumerate(hits)
     )
     # 检索质量 → 动态指令（忠实度防线）
@@ -152,14 +176,15 @@ def build_prompt(question, hits, context, history=None):
         grounding = "【检索资料相关性较低。请严格仅依据以下资料作答，资料不足时声明未覆盖，禁止补充自身知识。】"
     else:
         grounding = ""
+    # 意图分类（单一入口 classify_intent；review S7：删除内联关键词拷贝，防再分叉）
+    intent = classify_intent(question)
     # 演示类请求：动态再强调一次，防止模型只文字解释而不生成 step_explain actions
     demo_hint = ""
-    has_demo_kw = any(kw in question for kw in ("演示", "分步", "逐步", "动画", "讲解", "按顺序", "依次", "顺序", "walk through", "show me"))
-    if has_demo_kw:
+    if intent == Intent.DEMO:
         demo_hint = "【用户要求分步演示/按顺序观察过程，必须在 actions 中返回 step_explain；steps 不能为空。若用户没有给出具体数值，请自行选择 3-5 个典型数值；若用户给出多个数值（如“插入 12,3,9,18,5”），必须把每个数值拆成一个 step 按顺序放入 steps。】\n"
     # 分析类操作请求：问"插入8会导致什么/会怎样/为什么"——要原理/历史过程，不是执行。
     analyze_hint = ""
-    if _is_analyze_operation(question):
+    if intent == Intent.ANALYZE:
         analyze_hint = (
             "【用户问的是某个操作会造成什么影响/结果/原理，属于分析类问题，不是要求执行该操作。"
             "请基于当前真实状态回答：若当前状态已包含该操作结果（如树中已有该值），则解释从操作前到当前状态的历史变换过程（包括旋转、高度变化、遍历路径等）；"
@@ -168,9 +193,8 @@ def build_prompt(question, hits, context, history=None):
         )
     # 直接执行类请求：问题含操作词+数值，且未要求分步演示、且不是分析类 → 必须 run_operation
     run_hint = ""
-    if not has_demo_kw and not analyze_hint:
-        if _OPERATION_RE.search(question):
-            run_hint = "【用户要求直接执行某个具体操作（含操作词和数值），必须在 actions 中返回 run_operation，禁止只给文字解释。】\n"
+    if intent == Intent.EXECUTE:
+        run_hint = "【用户要求直接执行某个具体操作（含操作词和数值），必须在 actions 中返回 run_operation，禁止只给文字解释。】\n"
     # 注意：JSON 示例说明必须是普通字符串（非 f-string），否则其中的 { } 会被当成形
     # 式字段解析，导致 "Invalid format specifier" 运行时错误。仅下面的 6 个动态字段走 f-string。
     return f"""当前可视化上下文：{ctx_text}
@@ -293,16 +317,46 @@ def _extract_ints(text):
     return [int(x) for x in re.findall(r"\d+", text)]
 
 
-def _is_arithmetic_only(question):
-    """检测是否纯算术问题（如 5+3=几、1+1=?）。
-    这类问题的数字是运算数，不是数据结构节点值，应直接拒答、不高亮。"""
-    # 去掉空格、常见疑问词和中文标点
-    cleaned = re.sub(r"[等于几是多少多少？?！!，,、；;：:\s]+", "", question)
-    # 清理后必须非空，且只含数字（半角/全角）和运算符
-    return bool(cleaned) and bool(re.fullmatch(r"[\d０-９\.\+\-\*/%=]+", cleaned))
+def _enforce_intent_contract(question, actions):
+    """分析类意图锁死：服务端强制剥离 run_operation/step_explain。
+
+    prompt 规则 10 只是软约束，模型可能不守；契约由这里兜底兑现——
+    用户问"会怎样/为什么/分析"时，前端绝不收到可执行动作。
+    """
+    if not _is_analyze_operation(question):
+        return actions
+    return [a for a in actions
+            if not (isinstance(a, dict) and a.get("type") in ("run_operation", "step_explain"))]
 
 
-def call_llm(question, hits, context, provider="offline", api_key="", base_url="", model="", temperature=0.3, history=None):
+def _should_reject(hits, retriever_kind):
+    """分路质量门控：是否应硬拒答（不调 LLM）。
+
+    naive 路 BM25 分数是无界 IDF 加权和，0.4/0.55 阈值对它无意义，
+    改用检索器算好的 q_match（IDF≥2.5 稀有词至少命中 2 个）；
+    vector/hybrid 路保留余弦相似度 0.4 硬拒阈值。
+    """
+    if retriever_kind == "naive":
+        return (not hits) or not any(getattr(h, "q_match", False) for h in hits[:5])
+    best = _best_score(hits)
+    return (not hits) or best < HARD_REJECT_FLOOR
+
+
+def _valid_highlights(question, context):
+    """highlight_nodes 后端校验：只返回真实存在于当前结构中的节点值。
+
+    从 context.tree_state 提取真实节点值集合，与问题中抽取的整数求交。
+    无 tree_state（或为空）时交集为空 —— 宁缺毋滥，绝不高亮不存在的节点。
+    契约由后端兑现，前端的静默跳过仅作防御纵深。
+    """
+    tree_state = ""
+    if isinstance(context, dict):
+        tree_state = str(context.get("tree_state", "") or "")
+    real_nodes = set(_extract_ints(tree_state))
+    return [v for v in _extract_ints(question) if v in real_nodes]
+
+
+def call_llm(question, hits, context, provider="offline", api_key="", base_url="", model="", temperature=0.3, history=None, retriever_kind="vector"):
     # 算术问题拦截：数字是运算数，不是节点值，不应触发高亮或模型计算。
     if _is_arithmetic_only(question):
         return (
@@ -313,20 +367,20 @@ def call_llm(question, hits, context, provider="offline", api_key="", base_url="
             [],
         )
 
-    # 硬兜底（跨检索器通用）：空检索或 top 相似度低于硬拒阈值 → 直接拒答，不调 LLM。
-    # 不再依赖检索器的 q_match（其在 chroma 下太宽松，0.25 即可通过），改用最高分。
-    best = _best_score(hits)
-    if not hits or best < HARD_REJECT_FLOOR:
+    # 硬兜底：空检索/低相关 → 直接拒答，不调 LLM。按检索路分门控（详见 _should_reject）。
+    if _should_reject(hits, retriever_kind):
         return (
             "当前知识库未覆盖此问题。\n"
             "建议：尝试更具体的问法，或查阅对应教材章节。",
-            _extract_ints(question),
+            _valid_highlights(question, context),
             [],
             [],
         )
     if provider != "offline" and api_key:
         ans, hl, src, actions = _call_openai(question, hits, context, api_key, base_url, model, temperature, history)
         if not ans.startswith("[LLM 调用失败"):
+            # 分析类意图锁死（服务端强制兑现契约，不信任模型自觉遵守 prompt）
+            actions = _enforce_intent_contract(question, actions)
             return ans, hl, src, actions
         # API 调用失败（key 无效 / 网络不可达 / 参数不支持）→ 降级为离线拼接，至少把检索资料给用户
         print(f"[WARN] openai 调用失败，降级为离线拼接答案。原因：{ans}", flush=True)
@@ -338,7 +392,7 @@ def call_llm(question, hits, context, provider="offline", api_key="", base_url="
         src = h.metadata.get("source", "")
         parts.append(f"· ({src}) {h.text[:1200]}")
     answer = "【离线模式·检索到的资料】\n\n" + "\n\n".join(parts)
-    highlight = _extract_ints(question)
+    highlight = _valid_highlights(question, context)
     sources = [h.metadata.get("source", "") for h in top]
     return answer, highlight, sources, []
 
