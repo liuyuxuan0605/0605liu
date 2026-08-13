@@ -1,6 +1,17 @@
-fastapi>=0.110
-uvicorn>=0.27
-chromadb>=0.4.24
-sentence-transformers>=2.5
-openai>=1.30
-python-dotenv>=1.0
+# DSVisualizer RAG 后端依赖
+# ---------------------------------------------------------------------------
+# 零依赖模式（RETRIEVER=naive + LLM_PROVIDER=offline）无需安装任何包，
+# `python server.py` 直接开箱即跑。下面是为“语义/向量检索”和“生产入口”准备的。
+# ---------------------------------------------------------------------------
+
+# 语义检索（semantic）与向量检索（chroma）必需：负责文本向量化 HTTP 调用
+requests>=2.25.0
+chromadb>=0.4.0
+
+# 可选：自动从 .env 加载配置。不装也能跑，代码内置手动解析兜底。
+python-dotenv>=0.20.0
+
+# 可选生产入口 app.py（FastAPI + uvicorn）。注意：默认主入口是 server.py，
+# app.py 目前未接线，仅作为生产部署备选。
+fastapi>=0.100.0
+uvicorn>=0.20.0
